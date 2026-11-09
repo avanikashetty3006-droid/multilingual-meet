@@ -13,6 +13,7 @@ import { SubtitlePanel } from './SubtitlePanel';
 import { useRoomSocket } from './useRoomSocket';
 import { MicCaptureManager } from './micWorklet';
 import { AudioQueue } from './audioQueue';
+import { createStatsTracker } from './netStats';
 import { GoogleAuth } from './GoogleAuth';
 import { LogoReveal } from './LogoReveal';
 
@@ -40,41 +41,47 @@ export default function App() {
   const [mainCaptions, setMainCaptions] = useState([]);
   const [overlapCaptions, setOverlapCaptions] = useState([]);
   const [showDebug, setShowDebug] = useState(false);
+  const [simulatePoor, setSimulatePoor] = useState(false);
   const [lastChunkDelayMs, setLastChunkDelayMs] = useState(null);
   const [micError, setMicError] = useState(null);
 
   const audioQueueRef = useRef(null);
   const micManagerRef = useRef(null);
   const liveKitStatsGetterRef = useRef(null);
+  const mutedRef = useRef(false); // last known LiveKit mic state, so a new MicCaptureManager starts in sync
 
-  // Initialize AudioQueue with Audio Ducking wired (Bug 5 fix)
+  // AudioQueue with ducking: call audio goes down to 15% while translated speech plays,
+  // and each element goes back to ITS OWN original volume afterwards.
   useEffect(() => {
-    const duckCallAudio = (targetVolume) => {
+    const duckCallAudio = (duck) => {
       document.querySelectorAll('audio').forEach((el) => {
-        // Do not duck the translated speech playback itself
-        if (el !== audioQueueRef.current?.currentAudio) {
-          el.dataset.origVolume = el.dataset.origVolume || String(el.volume);
-          el.volume = targetVolume;
+        if (el === audioQueueRef.current?.currentAudio) return; // never duck the translated speech itself
+        if (duck) {
+          if (el.dataset.origVolume === undefined) el.dataset.origVolume = String(el.volume);
+          el.volume = 0.15;
+        } else if (el.dataset.origVolume !== undefined) {
+          el.volume = Number(el.dataset.origVolume);
+          delete el.dataset.origVolume;
         }
       });
     };
 
     audioQueueRef.current = new AudioQueue({
-      onDuckStart: () => duckCallAudio(0.15),
-      onDuckEnd: () => duckCallAudio(1.0),
+      onDuckStart: () => duckCallAudio(true),
+      onDuckEnd: () => duckCallAudio(false),
     });
 
     return () => audioQueueRef.current?.clear();
   }, []);
 
   const handleTranslation = useCallback((msg) => {
-    // Track chunk round-trip / processing delay (Feature 8)
+    // Track chunk round-trip / processing delay
     if (msg.ts_ms) {
       setLastChunkDelayMs(Math.max(0, Date.now() - msg.ts_ms));
     }
 
     if (msg.lane === 'overlap') {
-      // Overlap lane limited to recent entries, trimmed to 2 lines in UI (Contract A4)
+      // Overlap lane keeps recent entries; SubtitlePanel shows the latest line of up to 2 talkers (Contract A4)
       setOverlapCaptions((prev) => [msg, ...prev].slice(0, 15));
     } else {
       setMainCaptions((prev) => [msg, ...prev].slice(0, 50));
@@ -86,7 +93,17 @@ export default function App() {
     }
   }, []);
 
-  // Real WebRTC Stats getter (Bug 1 fix)
+  // Stable callbacks: LiveKitController's effect depends on them. If they changed on every render
+  // (e.g. each incoming caption), the stats tracker would be re-created and lose its history.
+  const registerStatsGetter = useCallback((getter) => {
+    liveKitStatsGetterRef.current = getter;
+  }, []);
+
+  const handleMuteChange = useCallback((isMuted) => {
+    mutedRef.current = isMuted;
+    micManagerRef.current?.setMuted(isMuted);
+  }, []);
+
   const getLiveKitStats = useCallback(async () => {
     if (liveKitStatsGetterRef.current) {
       return await liveKitStatsGetterRef.current();
@@ -109,11 +126,14 @@ export default function App() {
     lang: session?.lang,
     onTranslation: handleTranslation,
     getLiveKitStats,
+    simulatePoor,
   });
 
-  // Start Mic Audio Streaming to Call Server on join with error reporting and auto-reconnect (Bug 6 & 7)
+  // Start mic streaming to the call server on join.
+  // Depends only on room + participant: changing the translation language (which updates `session`)
+  // must NOT restart the microphone.
   useEffect(() => {
-    if (!session) return;
+    if (!session?.roomId || !session?.participantId) return;
 
     setMicError(null);
     const wsProto = CALL_SERVER_URL.startsWith('https') ? 'wss' : 'ws';
@@ -125,6 +145,7 @@ export default function App() {
         setMicError(errMsg);
       },
     });
+    micManager.setMuted(mutedRef.current);
     micManagerRef.current = micManager;
 
     micManager.start().catch((err) => {
@@ -136,7 +157,7 @@ export default function App() {
       micManager.stop();
       micManagerRef.current = null;
     };
-  }, [session]);
+  }, [session?.roomId, session?.participantId]);
 
   const handleJoin = async ({ roomId, participantId, name, lang }) => {
     const res = await fetch(`${CALL_SERVER_URL}/v1/rooms/${roomId}/join`, {
@@ -168,6 +189,8 @@ export default function App() {
     setOverlapCaptions([]);
     setLastChunkDelayMs(null);
     setMicError(null);
+    setSimulatePoor(false);
+    mutedRef.current = false;
   };
 
   const handleLangChange = (e) => {
@@ -225,15 +248,10 @@ export default function App() {
       }}
       className="conference-shell"
     >
-      {/* LiveKit Controller for real getStats() & Mute Sync */}
+      {/* LiveKit Controller: real getStats() + mute sync */}
       <LiveKitController
-        onRegisterStatsGetter={(getter) => {
-          liveKitStatsGetterRef.current = getter;
-        }}
-        onMuteChange={(isMuted) => {
-          // Bug 2 fix: sync LiveKit mute button with translation audio capture
-          micManagerRef.current?.setMuted(isMuted);
-        }}
+        onRegisterStatsGetter={registerStatsGetter}
+        onMuteChange={handleMuteChange}
       />
 
       {/* Mic Error Banner */}
@@ -302,18 +320,35 @@ export default function App() {
             participantsList={participants}
           />
 
-          {/* Debug panel with chunk delay and real WebRTC QoS */}
-          {showDebug && lastNetStats && (
+          {/* QoS panel: real WebRTC stats, chunk delay, and the simulate-poor-network switch */}
+          {showDebug && (
             <div className="debug-card">
               <h4>Real-Time QoS Network Diagnostics</h4>
-              <div className="debug-grid">
-                <div>RTT: <strong>{lastNetStats.rtt_ms} ms</strong></div>
-                <div>Packet Loss: <strong>{lastNetStats.packet_loss_pct}%</strong></div>
-                <div>Bitrate: <strong>{lastNetStats.bitrate_kbps} kbps</strong></div>
-                <div>Jitter: <strong>{lastNetStats.jitter_ms} ms</strong></div>
-                <div>Current Mode: <strong style={{ textTransform: 'uppercase' }}>{mode.mode}</strong></div>
-                <div>Chunk Delay: <strong>{lastChunkDelayMs !== null ? `${lastChunkDelayMs} ms` : 'Measuring...'}</strong></div>
-              </div>
+
+              <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', marginBottom: '8px', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={simulatePoor}
+                  onChange={(e) => setSimulatePoor(e.target.checked)}
+                />
+                Simulate poor network (demo: forces Subtitle Mode within ~6 s)
+              </label>
+
+              {lastNetStats ? (
+                <div className="debug-grid">
+                  <div>RTT: <strong>{lastNetStats.rtt_ms} ms</strong></div>
+                  <div>Packet Loss: <strong>{lastNetStats.packet_loss_pct}%</strong></div>
+                  <div>Bitrate: <strong>{lastNetStats.bitrate_kbps} kbps</strong></div>
+                  <div>Jitter: <strong>{lastNetStats.jitter_ms} ms</strong></div>
+                  <div>Current Mode: <strong style={{ textTransform: 'uppercase' }}>{mode.mode}</strong></div>
+                  <div>Chunk Delay: <strong>{lastChunkDelayMs !== null ? `${lastChunkDelayMs} ms` : 'Measuring...'}</strong></div>
+                  {lastNetStats.simulated && <div style={{ color: '#f59e0b' }}>⚠ simulated values</div>}
+                </div>
+              ) : (
+                <p style={{ fontSize: '12px', opacity: 0.8 }}>
+                  Waiting for WebRTC statistics… (needs about 2 seconds of an established call)
+                </p>
+              )}
             </div>
           )}
         </main>
@@ -344,74 +379,63 @@ export default function App() {
 }
 
 /**
+ * Find the objects that can run getStats() for the two WebRTC connections of the call
+ * (publisher = what we send, subscriber = what we receive).
+ * The internal layout differs between livekit-client versions, so several places are tried.
+ * ALWAYS returns [publisherSource, subscriberSource]; a missing one is null (keeps stream keys stable).
+ */
+function findStatsSources(room) {
+  const engine = room?.engine;
+  const pcm = engine?.pcManager;                       // livekit-client >= 2.x
+  const candidates = [
+    pcm?.publisher ?? engine?.publisher,               // older versions: engine.publisher
+    pcm?.subscriber ?? engine?.subscriber,
+  ];
+
+  return candidates.map((t) => {
+    if (!t) return null;
+    const pc = t.pc ?? t._pc;
+    if (pc && typeof pc.getStats === 'function') return pc;   // raw RTCPeerConnection
+    if (typeof t.getStats === 'function') return t;           // or the transport wrapper itself
+    return null;
+  });
+}
+
+/**
  * Controller inside LiveKitRoom to access real RTCPeerConnection stats & mute events
  */
 function LiveKitController({ onRegisterStatsGetter, onMuteChange }) {
   const room = useRoomContext();
-  const lastBytesRef = useRef(0);
-  const lastTimeRef = useRef(Date.now());
 
   useEffect(() => {
     if (!room) return;
 
-    // 1. Register stats getter
+    // 1. Real stats: measured per 2-second window by netStats.js
+    const tracker = createStatsTracker();
+    let warned = false;
+
     const getStats = async () => {
-      try {
-        const pc = room.engine?.client?.pc;
-        if (!pc || !pc.getStats) return null;
-
-        const reports = await pc.getStats();
-        let rtt = 45;
-        let packetLossPct = 0.0;
-        let bitrateKbps = 850;
-        let jitterMs = 8;
-
-        reports.forEach((report) => {
-          // RTT from selected candidate-pair
-          if (report.type === 'candidate-pair' && report.state === 'succeeded') {
-            if (typeof report.currentRoundTripTime === 'number') {
-              rtt = Math.round(report.currentRoundTripTime * 1000);
-            }
-          }
-
-          // Packet Loss, Jitter & Bitrate from inbound-rtp
-          if (report.type === 'inbound-rtp' && (report.kind === 'video' || report.kind === 'audio')) {
-            if (report.packetsLost && report.packetsReceived) {
-              const totalPackets = report.packetsLost + report.packetsReceived;
-              if (totalPackets > 0) {
-                packetLossPct = parseFloat(((report.packetsLost / totalPackets) * 100).toFixed(1));
-              }
-            }
-            if (typeof report.jitter === 'number') {
-              jitterMs = Math.round(report.jitter * 1000);
-            }
-            if (typeof report.bytesReceived === 'number') {
-              const now = Date.now();
-              const dt = (now - lastTimeRef.current) / 1000;
-              if (dt > 0.5) {
-                const deltaBytes = report.bytesReceived - lastBytesRef.current;
-                bitrateKbps = Math.max(0, Math.round((deltaBytes * 8) / (dt * 1000)));
-                lastBytesRef.current = report.bytesReceived;
-                lastTimeRef.current = now;
-              }
-            }
-          }
-        });
-
-        return {
-          rtt_ms: rtt,
-          packet_loss_pct: packetLossPct,
-          bitrate_kbps: bitrateKbps,
-          jitter_ms: jitterMs,
-        };
-      } catch (e) {
+      const sources = findStatsSources(room);
+      if (!sources[0] && !sources[1]) {
+        if (!warned) {
+          warned = true;
+          console.warn(
+            '[VAAK] No RTCPeerConnection found on room.engine. Inspect it in the console: ' +
+            'Object.keys(room.engine) and Object.keys(room.engine.pcManager || {}) ' +
+            'and update findStatsSources() in App.jsx.'
+          );
+        }
         return null;
       }
+      const reports = await Promise.all(
+        sources.map((s) => (s ? s.getStats().catch(() => null) : Promise.resolve(null)))
+      );
+      return tracker(reports); // null until it has two samples and a round-trip time
     };
 
     onRegisterStatsGetter(getStats);
 
-    // 2. Mute sync listener (Bug 2 fix)
+    // 2. Mute sync: muting in LiveKit stops translation audio capture
     const checkMuteState = () => {
       const isMuted = !room.localParticipant.isMicrophoneEnabled;
       onMuteChange(isMuted);
@@ -422,8 +446,7 @@ function LiveKitController({ onRegisterStatsGetter, onMuteChange }) {
     room.on(RoomEvent.LocalTrackPublished, checkMuteState);
     room.on(RoomEvent.LocalTrackUnpublished, checkMuteState);
 
-    // Initial check
-    checkMuteState();
+    checkMuteState(); // initial
 
     return () => {
       room.off(RoomEvent.TrackMuted, checkMuteState);
