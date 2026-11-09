@@ -3,10 +3,20 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 /**
  * Hook for managing the Call Server room WebSocket connection.
  * Features:
- * - Real WebRTC getStats integration (rtt, packet loss, bitrate, jitter).
+ * - Real WebRTC stats (rtt, packet loss, bitrate, jitter) from getLiveKitStats().
+ *   If real stats are not available (null) NOTHING is sent: we never invent numbers.
+ * - simulatePoor: demo/test switch that sends a clearly "bad" network (flagged simulated:true).
+ *   It is read through a ref, so toggling it does not reconnect the WebSocket.
  * - "closedByUs" flag to permanently prevent ghost reconnects on leave.
  * - Decoupled language/name dependencies so set_lang does not re-trigger connection.
  */
+export const SIMULATED_POOR_STATS = {
+  rtt_ms: 450,
+  packet_loss_pct: 6,
+  bitrate_kbps: 200,
+  jitter_ms: 80,
+};
+
 export function useRoomSocket({
   callServerUrl,
   roomId,
@@ -14,7 +24,8 @@ export function useRoomSocket({
   name,
   lang,
   onTranslation,
-  getLiveKitStats, // Function returning Promise<{ rtt_ms, packet_loss_pct, bitrate_kbps, jitter_ms }>
+  getLiveKitStats, // () => Promise<{ rtt_ms, packet_loss_pct, bitrate_kbps, jitter_ms } | null>
+  simulatePoor = false,
 }) {
   const [participants, setParticipants] = useState([]);
   const [activeSpeaker, setActiveSpeaker] = useState({ holder: null, overlap: [] });
@@ -27,11 +38,13 @@ export function useRoomSocket({
   const statsIntervalRef = useRef(null);
   const closedByUsRef = useRef(false);
 
-  // Keep references to latest name and lang without re-triggering connection effect
+  // Keep references to latest values without re-triggering the connection effect
   const nameRef = useRef(name);
   nameRef.current = name;
   const langRef = useRef(lang);
   langRef.current = lang;
+  const simulateRef = useRef(simulatePoor);
+  simulateRef.current = simulatePoor;
 
   // Send a JSON message
   const send = useCallback((msg) => {
@@ -77,32 +90,31 @@ export function useRoomSocket({
           lang: langRef.current,
         }));
 
-        // Periodic real WebRTC net_stats every 2 seconds
+        // net_stats every 2 seconds
         if (statsIntervalRef.current) clearInterval(statsIntervalRef.current);
         statsIntervalRef.current = setInterval(async () => {
           if (closedByUsRef.current) return;
 
-          let realStats = null;
-          if (getLiveKitStats) {
+          let payload = null;
+          if (simulateRef.current) {
+            payload = { ...SIMULATED_POOR_STATS, simulated: true };
+          } else if (getLiveKitStats) {
             try {
-              realStats = await getLiveKitStats();
+              payload = await getLiveKitStats();
             } catch (err) {
               console.warn('Error reading WebRTC stats:', err);
             }
           }
 
-          // Fallback only if getLiveKitStats is unavailable yet
-          const statsPayload = {
-            type: 'net_stats',
-            rtt_ms: realStats?.rtt_ms ?? 50,
-            packet_loss_pct: realStats?.packet_loss_pct ?? 0.0,
-            bitrate_kbps: realStats?.bitrate_kbps ?? 850,
-            jitter_ms: realStats?.jitter_ms ?? 10,
-          };
+          if (!payload) {
+            // No real measurement yet: do not invent numbers, the server keeps its current mode.
+            setLastNetStats(null);
+            return;
+          }
 
-          setLastNetStats(statsPayload);
+          setLastNetStats(payload);
           if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify(statsPayload));
+            ws.send(JSON.stringify({ type: 'net_stats', ...payload }));
           }
         }, 2000);
       };
