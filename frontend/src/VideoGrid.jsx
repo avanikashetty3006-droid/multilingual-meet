@@ -38,9 +38,11 @@ export function VideoGrid({ activeSpeaker, participantsList = [] }) {
   // Remaining tracks for thumbnail strip
   const otherTracks = tracks.filter((t) => t !== mainTrack);
   const totalPages = Math.max(1, Math.ceil(otherTracks.length / THUMBNAILS_PER_PAGE));
+  // People leave: the stored page can be past the last page. Clamp it so the strip is never blank.
+  const safePage = Math.min(thumbnailPage, totalPages - 1);
   const visibleThumbnails = otherTracks.slice(
-    thumbnailPage * THUMBNAILS_PER_PAGE,
-    (thumbnailPage + 1) * THUMBNAILS_PER_PAGE
+    safePage * THUMBNAILS_PER_PAGE,
+    (safePage + 1) * THUMBNAILS_PER_PAGE
   );
 
   return (
@@ -146,16 +148,16 @@ export function VideoGrid({ activeSpeaker, participantsList = [] }) {
           {totalPages > 1 && (
             <button
               type="button"
-              onClick={() => setThumbnailPage((p) => Math.max(0, p - 1))}
-              disabled={thumbnailPage === 0}
+              onClick={() => setThumbnailPage(Math.max(0, safePage - 1))}
+              disabled={safePage === 0}
               style={{
                 padding: '8px 10px',
                 borderRadius: '6px',
                 backgroundColor: '#272c38',
                 color: '#fff',
                 border: '1px solid #374151',
-                cursor: thumbnailPage === 0 ? 'not-allowed' : 'pointer',
-                opacity: thumbnailPage === 0 ? 0.4 : 1,
+                cursor: safePage === 0 ? 'not-allowed' : 'pointer',
+                opacity: safePage === 0 ? 0.4 : 1,
               }}
             >
               &lsaquo;
@@ -176,16 +178,16 @@ export function VideoGrid({ activeSpeaker, participantsList = [] }) {
           {totalPages > 1 && (
             <button
               type="button"
-              onClick={() => setThumbnailPage((p) => Math.min(totalPages - 1, p + 1))}
-              disabled={thumbnailPage >= totalPages - 1}
+              onClick={() => setThumbnailPage(Math.min(totalPages - 1, safePage + 1))}
+              disabled={safePage >= totalPages - 1}
               style={{
                 padding: '8px 10px',
                 borderRadius: '6px',
                 backgroundColor: '#272c38',
                 color: '#fff',
                 border: '1px solid #374151',
-                cursor: thumbnailPage >= totalPages - 1 ? 'not-allowed' : 'pointer',
-                opacity: thumbnailPage >= totalPages - 1 ? 0.4 : 1,
+                cursor: safePage >= totalPages - 1 ? 'not-allowed' : 'pointer',
+                opacity: safePage >= totalPages - 1 ? 0.4 : 1,
               }}
             >
               &rsaquo;
