@@ -24,3 +24,8 @@ timeouts:
 limits:
   max_overlap: 2
   max_queue_depth: 8
+
+   token:
+     min_speech_ms: 200
+     release_silence_ms: 700
+     min_hold_ms: 1000
