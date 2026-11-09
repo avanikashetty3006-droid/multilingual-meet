@@ -27,14 +27,14 @@ This document tracks the end-to-end integration across all 4 roles of the **VAAK
 - [x] Simulated active speaker rotation and translation chunks verified in UI
 
 ### Phase 2: Role 1 & Role 2 Hardening (All Resolved)
-- [x] **WebRTC Real QoS Stats**: LiveKit `getStats()` queries candidate-pair RTT, inbound-rtp packet loss %, bitrate kbps, and jitter ms.
+- [ ] **WebRTC Real QoS Stats**: implemented in `netStats.js` (per-window RTT, loss, bitrate, jitter from the publisher and subscriber `getStats()`). Tick this only after you have opened the QoS panel in a real call and seen non-simulated numbers; if the panel says "Waiting for WebRTC statistics", fix `findStatsSources()` in `App.jsx`.
 - [x] **Microphone Mute Synchronization**: Muting microphone in conference stops audio transmission so muted users are never translated.
 - [x] **Ghost Reconnect Prevention**: Added `closedByUs` flag to `useRoomSocket` ensuring disconnect on leave never triggers reconnect loops.
 - [x] **Decoupled Language Switching**: Switching listening language triggers `set_lang` WebSocket event without tearing down the connection.
 - [x] **Audio Ducking**: Translated speech queues sequentially and automatically ducks room audio to 15% volume during playback.
-- [x] **Cross-Browser Audio Worklet**: Safe AudioContext instantiation across Chrome, Firefox, and Safari with automatic resampling to 16 kHz.
+- [ ] **Cross-Browser Audio Worklet**: `micWorklet.js` tries a 16 kHz AudioContext and falls back to the native rate with averaging resampler. Unit-checked with `node frontend/tests/resampler.check.mjs`; tick after a real test in Chrome AND Firefox (the server should receive 1024-byte frames).
 - [x] **20+ Participant Scaling**: Large active-speaker spotlight tile + paginated thumbnail strip (6 per page) + LiveKit `adaptiveStream` & `dynacast`.
-- [x] **Overlap Lane Limit**: Restricted to 2 lines per Contract A4/B1.
+- [x] **Overlap Lane Limit**: latest line of each distinct talker, at most 2 talkers (Contract A4/B1).
 - [x] **Chunk Latency**: Measured and displayed in real-time QoS Debug inspector.
 
 ---
@@ -70,25 +70,31 @@ This document tracks the end-to-end integration across all 4 roles of the **VAAK
    - **Audio Mode**: Translated speech audio plays smoothly; original voice is ducked.
    - **Token Holder Halo**: Active speaker tile glows with a gold border and token badge.
 
-### Step 5: Network Throttling Test (Main Project Idea)
-1. Open Chrome DevTools &rarr; Network tab &rarr; Throttling &rarr; select **"Slow 3G"** (or simulated bad connection).
-2. Within 3 consecutive windows (6 seconds), observe the Mode Badge at top:
-   - Switches automatically from **Audio Mode** &rarr; **Subtitle Mode (Adaptive)**.
-   - Reason displays: `poor_network_high_rtt` or `high_packet_loss`.
-   - Audio playback is halted to save bandwidth; subtitles continue uninterrupted.
-3. Restore connection to "No throttling":
-   - After 3 consecutive good windows, mode automatically switches back to **Audio Mode**.
+### Step 5: Poor Network Test (Main Project Idea)
+> Chrome DevTools "Slow 3G" does NOT affect WebRTC media, so it cannot be used for this test.
+
+1. Open the **QoS Stats** panel and tick **Simulate poor network** (sends RTT 450 ms, loss 6 %, bitrate 200 kbps). For a real degraded link use an OS tool instead: Linux `tc netem`, Windows Clumsy, macOS Network Link Conditioner.
+2. Within 3 consecutive windows (about 6 seconds), observe the Mode Badge at top:
+   - Switches from **Audio Mode** &rarr; **Subtitle Mode (Adaptive)**.
+   - Reason displays one of: `high_rtt_450ms`, `high_packet_loss_6.0%`, `low_bitrate_200kbps`.
+   - Translated audio stops to save bandwidth; subtitles continue uninterrupted.
+3. Untick the box (or remove the OS throttle):
+   - After 3 consecutive good windows, the mode switches back to **Audio Mode** (reason `good_network`).
+4. Without a browser: `python bots.py --num-bots 10 --network mixed --wav speech16k.wav` makes half the bots report a poor network; they must receive subtitles only.
 
 ### Step 6: 20+ Participant Bot Scale Test
 1. In terminal, run:
    ```bash
    cd load-test
-   python bots.py --users 20 --languages en,hi,kn --speak-pattern overlap
+   python bots.py --num-bots 20 --languages en,hi,kn --speak-pattern overlap --overlap-count 6 --wav speech16k.wav
    ```
+   (`--users` also works. The WAV must be 16 kHz mono PCM16: `ffmpeg -i input.mp3 -ar 16000 -ac 1 -sample_fmt s16 speech16k.wav`.)
 2. Observe frontend:
-   - Roster drawer shows 20 participants with active speaking and language badges.
-   - Thumbnail strip is cleanly paginated (6 per page) without FPS drops.
+   - Roster drawer shows 20 participants with language badges.
    - Overlap lane shows at most 2 overlapping talkers; extraneous talkers are dropped per contract rules.
+   - The bot run prints a summary at the end (messages by type, translations by lane and mode).
+
+> **Known limit:** bots join the call server only, not the LiveKit video call. They fill the roster and exercise translation, but there are no video tiles for them, so thumbnail pagination needs real browser tabs or LiveKit's own load-test tooling.
 
 ---
 
