@@ -75,7 +75,7 @@ export function JoinScreen({ onJoin, initialRoomId = 'room-alpha', user, onRepla
 
         <div className="join-header">
           <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '0.75rem' }}>
-            <img src="/vaak_logo.png" alt="VAAK Logo" style={{ height: '56px', width: 'auto', objectFit: 'contain' }} onError={(e) => { e.currentTarget.src = './src/assets/vaak_logo.png'; }} />
+            <img src="/vaak_logo.png" alt="VAAK Logo" style={{ height: '56px', width: 'auto', objectFit: 'contain' }} />
           </div>
           <p className="subtitle">Real-time video conferencing with automatic AI translation & speech synthesis</p>
         </div>

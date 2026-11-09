@@ -299,9 +299,6 @@ export function LogoReveal({ onComplete }) {
               src="/vaak_logo.png"
               alt="VAAK Logo"
               style={styles.logoImage}
-              onError={(e) => {
-                e.currentTarget.src = './src/assets/vaak_logo.png';
-              }}
             />
           </div>
 

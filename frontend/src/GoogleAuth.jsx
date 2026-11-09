@@ -1,18 +1,18 @@
 import React, { useState } from 'react';
 
 export function GoogleAuth({ onAuthenticated }) {
-  const [email, setEmail] = useState('sakshipadiyar06@gmail.com');
-  const [name, setName] = useState('Sakshi Padiyar');
+  const [email, setEmail] = useState('demo.speaker@vaak.internal');
+  const [name, setName] = useState('Demo Speaker');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const demoAccounts = [
-    { name: 'Sakshi Padiyar', email: 'sakshipadiyar06@gmail.com', avatar: 'SP', lang: 'en' },
-    { name: 'Avanika Shetty', email: 'avanika.shetty@gmail.com', avatar: 'AS', lang: 'kn' },
-    { name: 'Asha Rao', email: 'asha.rao@vaak.ai', avatar: 'AR', lang: 'hi' },
-    { name: 'Dr. Rahul Verma', email: 'r.verma@ai-dept.edu', avatar: 'RV', lang: 'hi' },
+    { name: 'Speaker 1 (English)', email: 'speaker.en@vaak.internal', avatar: 'EN', lang: 'en' },
+    { name: 'Speaker 2 (Hindi)', email: 'speaker.hi@vaak.internal', avatar: 'HI', lang: 'hi' },
+    { name: 'Speaker 3 (Kannada)', email: 'speaker.kn@vaak.internal', avatar: 'KN', lang: 'kn' },
+    { name: 'Speaker 4 (Tamil)', email: 'speaker.ta@vaak.internal', avatar: 'TA', lang: 'ta' },
   ];
 
-  const handleSignIn = (selectedName, selectedEmail) => {
+  const handleSignIn = (selectedName, selectedEmail, selectedLang) => {
     setIsSubmitting(true);
     setTimeout(() => {
       const user = {
@@ -24,17 +24,17 @@ export function GoogleAuth({ onAuthenticated }) {
           .join('')
           .slice(0, 2)
           .toUpperCase(),
-        token: 'google-oauth2-' + Math.random().toString(36).substring(2, 10),
+        lang: selectedLang || 'en',
+        token: 'demo-token-' + Math.random().toString(36).substring(2, 10),
       };
       localStorage.setItem('vaak_user', JSON.stringify(user));
       setIsSubmitting(false);
       onAuthenticated(user);
-    }, 500);
+    }, 400);
   };
 
   return (
     <div style={styles.container}>
-      {/* Background ambient glow circles */}
       <div style={styles.glowTopLeft} />
       <div style={styles.glowBottomRight} />
 
@@ -50,10 +50,6 @@ export function GoogleAuth({ onAuthenticated }) {
             src="/vaak_logo.png"
             alt="VAAK Logo"
             style={styles.logoImg}
-            onError={(e) => {
-              // Fallback to relative asset if needed
-              e.currentTarget.src = './src/assets/vaak_logo.png';
-            }}
           />
         </div>
 
@@ -65,21 +61,20 @@ export function GoogleAuth({ onAuthenticated }) {
       {/* Auth Card */}
       <div style={styles.card}>
         <div style={styles.cardHeader}>
-          <h2 style={styles.cardTitle}>Welcome to VAAK</h2>
+          <h2 style={styles.cardTitle}>VAAK Conference Access</h2>
           <p style={styles.cardSubtitle}>
-            Sign in with your Google account to access multilingual video rooms
+            Select a participant profile to enter the multilingual room
           </p>
         </div>
 
-        {/* Primary Google Sign-in Button */}
+        {/* Primary Demo Sign-in Button */}
         <button
-          onClick={() => handleSignIn(name, email)}
+          onClick={() => handleSignIn(name, email, 'en')}
           disabled={isSubmitting}
           style={styles.googleBtn}
           onMouseEnter={(e) => (e.currentTarget.style.borderColor = '#8C6E63')}
           onMouseLeave={(e) => (e.currentTarget.style.borderColor = '#D3A376')}
         >
-          {/* Google "G" SVG */}
           <svg style={styles.googleIcon} viewBox="0 0 24 24">
             <path
               fill="#4285F4"
@@ -99,13 +94,13 @@ export function GoogleAuth({ onAuthenticated }) {
             />
           </svg>
           <span style={styles.googleBtnText}>
-            {isSubmitting ? 'Signing in with Google...' : 'Continue with Google'}
+            {isSubmitting ? 'Entering conference...' : 'Continue as Demo Speaker'}
           </span>
           <span style={styles.arrowIcon}>&rarr;</span>
         </button>
 
         <div style={styles.divider}>
-          <span style={styles.dividerText}>Or choose a test account</span>
+          <span style={styles.dividerText}>Or choose simulated speaker</span>
         </div>
 
         {/* Quick Profile Selection */}
@@ -113,7 +108,7 @@ export function GoogleAuth({ onAuthenticated }) {
           {demoAccounts.map((account) => (
             <button
               key={account.email}
-              onClick={() => handleSignIn(account.name, account.email)}
+              onClick={() => handleSignIn(account.name, account.email, account.lang)}
               style={styles.profileRow}
               onMouseEnter={(e) => {
                 e.currentTarget.style.backgroundColor = 'rgba(255, 224, 178, 0.4)';
@@ -134,9 +129,9 @@ export function GoogleAuth({ onAuthenticated }) {
           ))}
         </div>
 
-        {/* Security badge */}
+        {/* Notice */}
         <div style={styles.securityFooter}>
-          <span>🔒 Google OAuth 2.0 • WebRTC Low-Latency VAAK System</span>
+          <span>Demo Session Mode • Production ready for Google Identity Services</span>
         </div>
       </div>
 
