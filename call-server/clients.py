@@ -19,7 +19,7 @@ logger = logging.getLogger("call-server.clients")
 class SpeechServiceClient:
     def __init__(self, base_url: str = SPEECH_SERVICE_URL):
         self.base_url = base_url.rstrip("/")
-        self.avg_latency_ms: float = 950.0
+        self.avg_latency_ms: Optional[float] = 950.0
         self.queue_depth: int = 0
 
     async def fetch_health(self) -> Dict[str, Any]:
@@ -32,7 +32,8 @@ class SpeechServiceClient:
                 res = await client.get(f"{self.base_url}/v1/health")
                 if res.status_code == 200:
                     data = res.json()
-                    self.avg_latency_ms = float(data.get("avg_latency_ms", 950.0))
+                    raw_latency = data.get("avg_latency_ms")
+                    self.avg_latency_ms = float(raw_latency) if raw_latency is not None else None
                     self.queue_depth = int(data.get("queue_depth", 0))
                     return data
         except Exception as e:
@@ -55,9 +56,9 @@ class SpeechServiceClient:
             await asyncio.sleep(0.3)
             # Produce mock canned translations as required by contract
             canned = {
-                "hi": {"text": "सभी को नमस्कार", "audio_url": f"{self.base_url}/audio/mock_hi.wav" if want_audio else None},
-                "kn": {"text": "ಎಲ್ಲರಿಗೂ ನಮಸ್ಕಾರ", "audio_url": f"{self.base_url}/audio/mock_kn.wav" if want_audio else None},
-                "en": {"text": "Hello everyone", "audio_url": f"{self.base_url}/audio/mock_en.wav" if want_audio else None},
+                "hi": {"text": "सभी को नमस्कार", "audio_url": f"{self.base_url}/audio/sample.wav" if want_audio else None},
+                "kn": {"text": "ಎಲ್ಲರಿಗೂ ನಮಸ್ಕಾರ", "audio_url": f"{self.base_url}/audio/sample.wav" if want_audio else None},
+                "en": {"text": "Hello everyone", "audio_url": f"{self.base_url}/audio/sample.wav" if want_audio else None},
             }
             translations = {}
             for lang in tgt_langs:
@@ -89,9 +90,14 @@ class SpeechServiceClient:
                 res = await client.post(f"{self.base_url}/v1/process-chunk", data=data, files=files)
                 if res.status_code == 200:
                     return res.json()
-                logger.error(f"Speech service error {res.status_code}: {res.text}")
+                elif res.status_code == 429:
+                    logger.warning(f"Speech service rate limit (429) on chunk {chunk_id}")
+                else:
+                    logger.error(f"Speech service error {res.status_code}: {res.text}")
+        except httpx.TimeoutException:
+            logger.warning(f"Speech service call timed out (>{SPEECH_SERVICE_TIMEOUT_S}s) for chunk {chunk_id}")
         except Exception as e:
-            logger.error(f"Speech service call timed out or failed: {e}")
+            logger.error(f"Speech service call failed for chunk {chunk_id}: {e}")
         return None
 
 
@@ -99,36 +105,68 @@ class SpeakerServiceClient:
     def __init__(self, base_url: str = SPEAKER_SERVICE_URL):
         self.base_url = base_url.replace("http://", "ws://").replace("https://", "wss://").rstrip("/")
 
-    async def connect_vad_stream(self, room_id: str, participant_id: str, on_vad_event):
-        """Maintains WS /ws/vad/{room}/{pid} connection and feeds VAD events."""
+    async def forward_vad_stream(
+        self,
+        room_id: str,
+        participant_id: str,
+        frame_queue: asyncio.Queue,
+        on_vad_state,
+    ):
+        """Maintains WS connection to /ws/vad/{room}/{pid}, forwards frames, reads VAD state."""
         ws_url = f"{self.base_url}/ws/vad/{room_id}/{participant_id}"
+        backoff_s = 0.5
         while True:
             try:
                 async with websockets.connect(ws_url) as ws:
                     logger.info(f"Connected to VAD service for {participant_id}")
-                    async for msg in ws:
-                        if isinstance(msg, str):
-                            data = json.loads(msg)
-                            await on_vad_event(data)
+                    backoff_s = 0.5
+
+                    async def send_loop():
+                        while True:
+                            frame = await frame_queue.get()
+                            try:
+                                await ws.send(frame)
+                            finally:
+                                frame_queue.task_done()
+
+                    async def recv_loop():
+                        async for msg in ws:
+                            if isinstance(msg, str):
+                                try:
+                                    data = json.loads(msg)
+                                    state = data.get("state")
+                                    if state:
+                                        await on_vad_state(state)
+                                except Exception as parse_err:
+                                    logger.warning(f"VAD parse error: {parse_err}")
+
+                    await asyncio.gather(send_loop(), recv_loop())
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.debug(f"VAD stream connection retry in 2s ({e})")
-                await asyncio.sleep(2.0)
+                logger.debug(f"VAD stream retry in {backoff_s:.1f}s ({e})")
+                await asyncio.sleep(backoff_s)
+                backoff_s = min(5.0, backoff_s * 2.0)
 
     async def subscribe_tokens(self, room_id: str, on_token_update):
         """Subscribes to WS /ws/token/{room} and listens for token_update events."""
         ws_url = f"{self.base_url}/ws/token/{room_id}"
+        backoff_s = 0.5
         while True:
             try:
                 async with websockets.connect(ws_url) as ws:
                     logger.info(f"Subscribed to token updates for room {room_id}")
+                    backoff_s = 0.5
                     async for msg in ws:
                         if isinstance(msg, str):
-                            data = json.loads(msg)
-                            await on_token_update(data)
+                            try:
+                                data = json.loads(msg)
+                                await on_token_update(data)
+                            except Exception as parse_err:
+                                logger.warning(f"Token update parse error: {parse_err}")
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.debug(f"Token update connection retry in 2s ({e})")
-                await asyncio.sleep(2.0)
+                logger.debug(f"Token update retry in {backoff_s:.1f}s ({e})")
+                await asyncio.sleep(backoff_s)
+                backoff_s = min(5.0, backoff_s * 2.0)

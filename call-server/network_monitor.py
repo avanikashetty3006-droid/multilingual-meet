@@ -1,13 +1,12 @@
-"""Network monitoring and mode decision engine.
+"""Network monitoring, mode decision engine, and fan-out rules.
 
-Implements the contract rule from section A7:
-- Evaluates RTT, packet loss %, bitrate, stats freshness, and speech service latency.
-- Uses hysteresis (default 3 consecutive windows) before flipping between "audio" and "subtitle".
-- Initial mode is "subtitle" until qualified.
+Implements the contract rules:
+- Section A7: quality evaluation with 3-window hysteresis.
+- Section A5/A6: lane assignment, overlap capping, audio gating, and queue drop rules.
 """
 
 from dataclasses import dataclass, field
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 from config import (
     GOOD_RTT_MAX_MS,
     GOOD_PACKET_LOSS_MAX_PCT,
@@ -16,6 +15,8 @@ from config import (
     STALE_STATS_SECONDS,
     HYSTERESIS_WINDOWS,
     INITIAL_MODE,
+    MAX_OVERLAP,
+    MAX_QUEUE_DEPTH,
 )
 
 
@@ -47,6 +48,50 @@ def evaluate_window_quality(
     if speech_latency_ms is not None and speech_latency_ms >= speech_latency_max:
         return False, f"high_speech_latency_{speech_latency_ms:.0f}ms"
     return True, "good_network"
+
+
+def compute_lane_for_participant(
+    pid: str,
+    holder: Optional[str],
+    overlap: List[str],
+    last_lane: Optional[str] = None,
+    max_overlap: int = MAX_OVERLAP,
+) -> Optional[str]:
+    """Pure function determining participant's lane from token state.
+
+    - holder => "main"
+    - in overlap (index < max_overlap) => "overlap"
+    - beyond max_overlap => None (ignored)
+    - absent from update => keep last_lane
+    """
+    if pid == holder:
+        return "main"
+    if pid in overlap:
+        idx = overlap.index(pid)
+        if idx < max_overlap:
+            return "overlap"
+        return None
+    return last_lane
+
+
+def should_want_audio(lane: Optional[str], is_any_listener_audio: bool) -> bool:
+    """Pure function: want_audio is True only for MAIN lane AND at least one listener is in audio mode."""
+    return (lane == "main") and is_any_listener_audio
+
+
+def should_drop_overlap_for_queue(
+    lane: Optional[str],
+    in_flight: int,
+    queue_depth: int,
+    max_queue_depth: int = MAX_QUEUE_DEPTH,
+) -> bool:
+    """Pure function: drops OVERLAP chunks if in_flight >= max or queue_depth > max.
+
+    Never drops main lane for queue reasons.
+    """
+    if lane == "overlap" and (in_flight >= max_queue_depth or queue_depth > max_queue_depth):
+        return True
+    return False
 
 
 @dataclass

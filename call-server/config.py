@@ -14,6 +14,7 @@ yaml_cfg = load_yaml_config()
 net_cfg = yaml_cfg.get("network", {})
 audio_cfg = yaml_cfg.get("audio", {})
 timeout_cfg = yaml_cfg.get("timeouts", {})
+limit_cfg = yaml_cfg.get("limits", {})
 
 # Service URLs and Ports
 CALL_SERVER_URL = os.getenv("CALL_SERVER_URL", "http://localhost:8000")
@@ -48,3 +49,7 @@ MAX_CHUNK_SEC = float(audio_cfg.get("max_chunk_sec", 4.0))
 # Timeouts
 SPEECH_SERVICE_TIMEOUT_S = float(timeout_cfg.get("speech_service_s", 6.0))
 HEALTH_POLL_INTERVAL_S = float(timeout_cfg.get("health_poll_interval_s", 2.0))
+
+# Limits (from shared/config.yaml)
+MAX_OVERLAP = int(limit_cfg.get("max_overlap", 2))
+MAX_QUEUE_DEPTH = int(limit_cfg.get("max_queue_depth", 8))

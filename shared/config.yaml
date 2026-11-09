@@ -20,3 +20,7 @@ audio:
 timeouts:
   speech_service_s: 6.0
   health_poll_interval_s: 2.0
+
+limits:
+  max_overlap: 2
+  max_queue_depth: 8

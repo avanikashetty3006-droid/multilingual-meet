@@ -6,7 +6,31 @@ from typing import Dict, List, Optional, Any
 from starlette.websockets import WebSocket
 from network_monitor import ListenerNetworkState
 from chunker import ParticipantAudioChunker
-from config import INITIAL_MODE
+from config import INITIAL_MODE, MAX_OVERLAP
+
+
+def compute_lane_for_participant(
+    pid: str,
+    holder: Optional[str],
+    overlap: List[str],
+    last_lane: Optional[str] = None,
+    max_overlap: int = MAX_OVERLAP,
+) -> Optional[str]:
+    """Pure function determining participant's lane from token state.
+
+    - holder => "main"
+    - in overlap (index < max_overlap) => "overlap"
+    - beyond max_overlap => None (ignored)
+    - absent from update => keep last_lane
+    """
+    if pid == holder:
+        return "main"
+    if pid in overlap:
+        idx = overlap.index(pid)
+        if idx < max_overlap:
+            return "overlap"
+        return None
+    return last_lane
 
 
 @dataclass
@@ -37,7 +61,21 @@ class Room:
         self.participants: Dict[str, Participant] = {}
         self.token_holder: Optional[str] = None
         self.overlap: List[str] = []
+        self.token_task: Optional[asyncio.Task] = None
+        self.in_flight_speech_calls: int = 0
         self.lock = asyncio.Lock()
+
+    def update_token_state(self, holder: Optional[str], overlap: List[str], max_overlap: int = MAX_OVERLAP):
+        self.token_holder = holder
+        self.overlap = overlap
+        for pid, p in self.participants.items():
+            p.lane = compute_lane_for_participant(
+                pid=pid,
+                holder=holder,
+                overlap=overlap,
+                last_lane=p.lane,
+                max_overlap=max_overlap,
+            )
 
     def get_participant_list(self) -> List[Dict[str, str]]:
         return [
@@ -99,4 +137,6 @@ class RoomManager:
             if participant_id in room.overlap:
                 room.overlap.remove(participant_id)
             if not room.participants:
+                if room.token_task:
+                    room.token_task.cancel()
                 del self.rooms[room_id]
