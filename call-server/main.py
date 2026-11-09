@@ -99,28 +99,40 @@ async def network_evaluator_loop():
     """Periodic loop to evaluate listener network stats every 2s with hysteresis."""
     while True:
         try:
-            await asyncio.sleep(2.0)
+            now = time.time()
             health = await speech_client.fetch_health()
-            speech_latency = float(health.get("avg_latency_ms", 950.0))
+            speech_latency = health.get("avg_latency_ms")
+            if speech_latency is not None:
+                speech_latency = float(speech_latency)
 
             for room in list(room_manager.rooms.values()):
                 for pid, p in list(room.participants.items()):
+                    if p.latest_net_stats is None:
+                        # Do nothing until first net_stats has arrived
+                        continue
+
+                    stats_age_s = now - p.latest_net_stats_ts
                     stats = p.latest_net_stats
+                    is_first_eval = not p.net_state.has_evaluated
                     new_mode, changed, reason = p.net_state.record_window(
-                        rtt_ms=float(stats.get("rtt_ms", 50)),
+                        rtt_ms=float(stats.get("rtt_ms", 0)),
                         packet_loss_pct=float(stats.get("packet_loss_pct", 0.0)),
-                        bitrate_kbps=float(stats.get("bitrate_kbps", 1000)),
+                        bitrate_kbps=float(stats.get("bitrate_kbps", 0)),
                         speech_latency_ms=speech_latency,
+                        stats_age_s=stats_age_s,
                     )
-                    if changed:
-                        p.mode = new_mode
-                        logger.info(f"Mode switched for {pid} to {new_mode} (reason: {reason})")
+                    p.mode = new_mode
+                    if changed or is_first_eval:
+                        logger.info(f"Mode update for {pid} to {new_mode} (reason: {reason})")
                         if p.ws:
-                            await p.ws.send_json({
-                                "type": "mode",
-                                "mode": new_mode,
-                                "reason": reason,
-                            })
+                            try:
+                                await p.ws.send_json({
+                                    "type": "mode",
+                                    "mode": new_mode,
+                                    "reason": reason,
+                                })
+                            except Exception:
+                                pass
         except asyncio.CancelledError:
             break
         except Exception as e:
@@ -278,11 +290,12 @@ async def room_events_ws(websocket: WebSocket, room_id: str, participant_id: Opt
                 if current_pid and current_pid in room.participants:
                     p = room.participants[current_pid]
                     p.latest_net_stats = {
-                        "rtt_ms": data.get("rtt_ms", 50),
-                        "packet_loss_pct": data.get("packet_loss_pct", 0.0),
-                        "bitrate_kbps": data.get("bitrate_kbps", 1000),
-                        "jitter_ms": data.get("jitter_ms", 5),
+                        "rtt_ms": float(data.get("rtt_ms", 50)),
+                        "packet_loss_pct": float(data.get("packet_loss_pct", 0.0)),
+                        "bitrate_kbps": float(data.get("bitrate_kbps", 1000)),
+                        "jitter_ms": float(data.get("jitter_ms", 5)),
                     }
+                    p.latest_net_stats_ts = time.time()
 
             elif msg_type == "set_lang":
                 new_lang = data.get("lang")

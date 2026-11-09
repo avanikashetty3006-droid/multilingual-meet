@@ -17,14 +17,11 @@ class Participant:
     room_id: str
     ws: Optional[WebSocket] = None
     mode: str = INITIAL_MODE
+    lane: Optional[str] = None
     net_state: ListenerNetworkState = field(init=False)
     chunker: ParticipantAudioChunker = field(init=False)
-    latest_net_stats: Dict[str, Any] = field(default_factory=lambda: {
-        "rtt_ms": 50,
-        "packet_loss_pct": 0.0,
-        "bitrate_kbps": 1200,
-        "jitter_ms": 5
-    })
+    latest_net_stats: Optional[Dict[str, Any]] = None
+    latest_net_stats_ts: float = 0.0
 
     def __post_init__(self):
         self.net_state = ListenerNetworkState(

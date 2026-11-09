@@ -6,6 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from network_monitor import evaluate_window_quality, ListenerNetworkState
+from rooms import Participant
 
 
 def test_pure_quality_evaluation():
@@ -100,3 +101,53 @@ def test_intermittent_flapping_prevented_by_hysteresis():
     mode, changed, _ = state.record_window(80, 0.2, 1000, 1000)
     assert mode == "subtitle"
     assert changed is False
+
+
+def test_no_decision_before_first_stats():
+    # A newly created participant has latest_net_stats = None
+    p = Participant(participant_id="p-new", name="Asha", lang="en", room_id="r1")
+    assert p.latest_net_stats is None
+    assert p.net_state.has_evaluated is False
+    assert p.mode == "subtitle"
+
+
+def test_stale_stats_evaluates_to_poor():
+    # Fresh stats (age 2s <= 6s threshold)
+    good, reason = evaluate_window_quality(
+        rtt_ms=80, packet_loss_pct=0.5, bitrate_kbps=800, stats_age_s=2.0
+    )
+    assert good is True
+    assert reason == "good_network"
+
+    # Stale stats (age 7s > 6s threshold)
+    good, reason = evaluate_window_quality(
+        rtt_ms=80, packet_loss_pct=0.5, bitrate_kbps=800, stats_age_s=7.0
+    )
+    assert good is False
+    assert reason == "stale_stats"
+
+    # Stale stats forces mode switch to subtitle under hysteresis
+    state = ListenerNetworkState(participant_id="p-1", current_mode="audio")
+    state.record_window(80, 0.2, 1000, stats_age_s=7.0)
+    state.record_window(80, 0.2, 1000, stats_age_s=7.0)
+    mode, changed, reason = state.record_window(80, 0.2, 1000, stats_age_s=7.0)
+    assert mode == "subtitle"
+    assert changed is True
+    assert reason == "stale_stats"
+
+
+def test_unknown_speech_latency_does_not_block_audio():
+    # When speech_latency_ms is None (service health failed/unknown), does not block audio
+    good, reason = evaluate_window_quality(
+        rtt_ms=80, packet_loss_pct=0.5, bitrate_kbps=800, speech_latency_ms=None
+    )
+    assert good is True
+    assert reason == "good_network"
+
+    state = ListenerNetworkState(participant_id="p-1", current_mode="subtitle")
+    state.record_window(80, 0.2, 1000, speech_latency_ms=None)
+    state.record_window(80, 0.2, 1000, speech_latency_ms=None)
+    mode, changed, reason = state.record_window(80, 0.2, 1000, speech_latency_ms=None)
+    assert mode == "audio"
+    assert changed is True
+    assert reason == "good_network"

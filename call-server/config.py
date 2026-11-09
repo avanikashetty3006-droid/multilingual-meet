@@ -33,6 +33,7 @@ GOOD_RTT_MAX_MS = float(net_cfg.get("good_rtt_max_ms", 150))
 GOOD_PACKET_LOSS_MAX_PCT = float(net_cfg.get("good_packet_loss_max_pct", 2.0))
 GOOD_BITRATE_MIN_KBPS = float(net_cfg.get("good_bitrate_min_kbps", 500))
 SPEECH_SERVICE_LATENCY_MAX_MS = float(net_cfg.get("speech_service_latency_max_ms", 3000))
+STALE_STATS_SECONDS = float(net_cfg.get("stale_stats_seconds", 6.0))
 HYSTERESIS_WINDOWS = int(net_cfg.get("hysteresis_windows", 3))
 INITIAL_MODE = net_cfg.get("initial_mode", "subtitle")
 

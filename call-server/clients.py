@@ -37,7 +37,7 @@ class SpeechServiceClient:
                     return data
         except Exception as e:
             logger.warning(f"Speech service health check failed: {e}")
-        return {"status": "unreachable", "queue_depth": self.queue_depth, "avg_latency_ms": self.avg_latency_ms}
+        return {"status": "unreachable", "queue_depth": self.queue_depth, "avg_latency_ms": None}
 
     async def process_chunk(
         self,
