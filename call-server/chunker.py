@@ -1,7 +1,7 @@
 """Audio stream chunker per participant.
 
 Buffers raw PCM16 16kHz mono frames (1024 bytes / 32 ms).
-- Rolling pre-roll buffer of last 300ms (10 frames) prepended on speech_start.
+- Rolling pre-roll buffer of last 480ms (15 frames) prepended on speech_start.
 - Only buffers frames while speaking.
 - Cuts chunks on:
   1) 4.0s of continuous speech (then keeps collecting)
@@ -22,7 +22,7 @@ BYTES_PER_SECOND = SAMPLE_RATE * CHANNELS * BYTES_PER_SAMPLE  # 32000 bytes/sec
 FRAME_BYTES = 1024
 MIN_CHUNK_BYTES = int((MIN_CHUNK_MS / 1000.0) * BYTES_PER_SECOND)  # 12800 bytes
 MAX_CHUNK_BYTES = int(MAX_CHUNK_SEC * BYTES_PER_SECOND)  # 128000 bytes (4 sec)
-PRE_ROLL_FRAMES = 10  # ~320ms
+PRE_ROLL_FRAMES = 15  # ~480ms (15 frames @ 32ms)
 
 
 def pcm_to_wav(pcm_bytes: bytes) -> bytes:
@@ -37,18 +37,10 @@ def pcm_to_wav(pcm_bytes: bytes) -> bytes:
 
 
 def is_pure_silence(pcm_bytes: bytes) -> bool:
-    """Returns True if the audio buffer consists entirely of zero bytes or silent samples."""
+    """Returns True if the audio buffer consists entirely of zero bytes (pure silence)."""
     if not pcm_bytes:
         return True
-    # Fast check: all zeros
-    if pcm_bytes == b"\x00" * len(pcm_bytes):
-        return True
-    # Check max absolute amplitude
-    import struct
-    count = len(pcm_bytes) // 2
-    samples = struct.unpack(f"<{count}h", pcm_bytes)
-    max_amp = max(abs(s) for s in samples)
-    return max_amp < 150  # Noise floor threshold
+    return pcm_bytes == b"\x00" * len(pcm_bytes)
 
 
 class ParticipantAudioChunker:

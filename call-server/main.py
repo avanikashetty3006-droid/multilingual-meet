@@ -626,6 +626,8 @@ async def audio_stream_ws(websocket: WebSocket, room_id: str, participant_id: st
         while True:
             # FIX 7: use websocket.receive() to gracefully ignore text frames
             message = await websocket.receive()
+            if message.get("type") == "websocket.disconnect":
+                break
             if "bytes" not in message:
                 continue
 
@@ -665,3 +667,6 @@ async def audio_stream_ws(websocket: WebSocket, room_id: str, participant_id: st
             asyncio.create_task(
                 process_and_fanout_chunk(room, participant, chunk_id, wav_bytes, time.time())
             )
+        # Clean up leftover participant if hello never arrived
+        if participant.name == "User" and participant.ws is None:
+            await room_manager.remove_participant(room_id, participant_id)

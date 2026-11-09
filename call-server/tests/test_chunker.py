@@ -34,16 +34,16 @@ def test_pre_roll_included():
     chunker = ParticipantAudioChunker("p-1")
     frame = make_audio_frame(amplitude=1500)
 
-    # Feed 10 frames before speech_start (pre-roll)
-    for _ in range(10):
+    # Feed 15 frames before speech_start (pre-roll)
+    for _ in range(15):
         chunker.add_frame(frame)
 
-    assert len(chunker.pre_roll) == 10
+    assert len(chunker.pre_roll) == 15
     assert len(chunker.buffer) == 0
 
     chunker.on_vad_speech_start()
-    # Buffer should now contain the 10 pre-roll frames (10 * 1024 = 10240 bytes)
-    assert len(chunker.buffer) == 10240
+    # Buffer should now contain the 15 pre-roll frames (15 * 1024 = 15360 bytes)
+    assert len(chunker.buffer) == 15360
 
 
 def test_wrong_size_frames_ignored():
@@ -62,11 +62,10 @@ def test_continuous_speech_8_6_seconds_gives_2_chunks():
     chunker.on_vad_speech_start()
 
     chunks = []
-    # 8.6 seconds = 8.6 / 0.032 = ~268 frames (268 * 0.032 = 8.576s)
-    # Plus pre-roll (0 frames in this case)
+    # 8.6 seconds = 8.6 / 0.032 = ~268 frames
     # At 4.0s (128000 bytes = 125 frames): chunk 1 cut
     # At 8.0s (250 frames): chunk 2 cut
-    # Remaining 18 frames (~0.576s) remain in buffer because speech is still ongoing!
+    # Remaining 18 frames remain in buffer
     for _ in range(268):
         c = chunker.add_frame(frame)
         if c:
@@ -76,7 +75,6 @@ def test_continuous_speech_8_6_seconds_gives_2_chunks():
     assert chunks[0][0] == "p-1-0"
     assert chunks[1][0] == "p-1-1"
 
-    # Verify chunk sizes: at most 4 seconds (128000 bytes PCM + 44 byte header)
     for cid, wav_bytes in chunks:
         buf = io.BytesIO(wav_bytes)
         with wave.open(buf, "rb") as wf:
