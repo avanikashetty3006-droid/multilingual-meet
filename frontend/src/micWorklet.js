@@ -1,25 +1,27 @@
 /**
- * micWorklet.js
+ * micWorklet.js  (replacement for frontend/src/micWorklet.js)
  *
- * Implements:
- * 1. AudioWorkletProcessor with sample-rate agnostic resampling to 16 kHz mono PCM16.
- *    Works safely across Chrome, Firefox, and Safari regardless of native hardware rate (44.1k/48k/16k).
- * 2. MicCaptureManager with:
- *    - Mute synchronization (stops sending audio when muted so user is not translated).
- *    - Error callbacks for mic permission/setup failures.
- *    - Automatic WebSocket reconnection for audio stream.
+ * 1. AudioWorkletProcessor that turns the microphone into 16 kHz mono PCM16, 512 samples (1024 bytes) per message.
+ *    - If the AudioContext already runs at 16 kHz (Chrome) it is a plain pass-through.
+ *    - Otherwise it down-samples by AVERAGING all input samples that fall into each output sample
+ *      (a simple low-pass: far less aliasing than "keep every Nth sample").
+ *    - State is carried between 128-sample blocks, so there are no clicks at block borders.
+ * 2. MicCaptureManager:
+ *    - mute sync (no frames are produced while muted, so a muted user is never translated),
+ *    - error callback for microphone problems,
+ *    - automatic WebSocket reconnection.
  */
 
 export const WORKLET_CODE = `
 class ResamplingPCMProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
-    this.targetSampleRate = 16000;
-    this.buffer = new Int16Array(512);
-    this.bufferIndex = 0;
-    this.resampleRatio = currentFrame ? (sampleRate / this.targetSampleRate) : 1;
-    this.fractionalIndex = 0;
-    this.lastSample = 0;
+    this.ratio = sampleRate / 16000;      // input samples per output sample (3 for 48 kHz, 1 for 16 kHz)
+    this.out = new Int16Array(512);
+    this.outIndex = 0;
+    this.acc = 0;                         // running sum of the current averaging window
+    this.count = 0;                       // samples in the current window
+    this.phase = 0;                       // how much of the window is filled (in input samples)
     this.isMuted = false;
 
     this.port.onmessage = (event) => {
@@ -29,41 +31,39 @@ class ResamplingPCMProcessor extends AudioWorkletProcessor {
     };
   }
 
-  process(inputs, outputs, parameters) {
+  process(inputs) {
     const input = inputs[0];
     if (!input || !input[0]) return true;
 
     if (this.isMuted) {
-      // While muted, do not process or emit frames (guarantees privacy & zero translation)
-      this.bufferIndex = 0;
+      // Muted: produce nothing and forget any half-built frame.
+      this.outIndex = 0;
+      this.acc = 0;
+      this.count = 0;
+      this.phase = 0;
       return true;
     }
 
-    const inputChannel = input[0];
-    const inRate = sampleRate; // Global AudioContext sample rate
-    const ratio = inRate / this.targetSampleRate;
+    const channel = input[0];
+    for (let i = 0; i < channel.length; i++) {
+      this.acc += channel[i];
+      this.count += 1;
+      this.phase += 1;
 
-    for (let i = 0; i < inputChannel.length; i++) {
-      this.fractionalIndex += 1;
-      if (this.fractionalIndex >= ratio) {
-        this.fractionalIndex -= ratio;
+      if (this.phase >= this.ratio) {
+        this.phase -= this.ratio;
+        const v = Math.max(-1, Math.min(1, this.acc / this.count));
+        this.out[this.outIndex++] = v < 0 ? v * 0x8000 : v * 0x7fff;
+        this.acc = 0;
+        this.count = 0;
 
-        // Linear interpolation between lastSample and current
-        const sample = inputChannel[i];
-        const clamped = Math.max(-1, Math.min(1, sample));
-        const pcmValue = clamped < 0 ? clamped * 0x8000 : clamped * 0x7FFF;
-
-        this.buffer[this.bufferIndex++] = pcmValue;
-
-        if (this.bufferIndex === 512) {
-          // Send 1024-byte ArrayBuffer (512 Int16 samples)
-          this.port.postMessage(this.buffer.buffer.slice(0), [this.buffer.buffer.slice(0)]);
-          this.bufferIndex = 0;
+        if (this.outIndex === 512) {
+          const copy = this.out.buffer.slice(0);   // one copy, and that same copy is transferred
+          this.port.postMessage(copy, [copy]);
+          this.outIndex = 0;
         }
       }
-      this.lastSample = inputChannel[i];
     }
-
     return true;
   }
 }
@@ -100,23 +100,16 @@ export class MicCaptureManager {
 
   _connectSocket() {
     if (!this.isActive) return;
-
     try {
       this.socket = new WebSocket(this.wsUrl);
       this.socket.binaryType = 'arraybuffer';
-
-      this.socket.onopen = () => {
-        this.onStateChange?.('connected');
-      };
-
+      this.socket.onopen = () => this.onStateChange?.('connected');
       this.socket.onclose = () => {
         this.onStateChange?.('disconnected');
         if (this.isActive) {
-          // Reconnect with backoff
           this.reconnectTimer = setTimeout(() => this._connectSocket(), 2000);
         }
       };
-
       this.socket.onerror = (err) => {
         console.warn('Audio WebSocket error:', err);
         this.socket?.close();
@@ -126,9 +119,34 @@ export class MicCaptureManager {
     }
   }
 
+  /**
+   * Create the AudioContext and connect the microphone to it.
+   * Chrome can run the context at 16 kHz (best quality: the browser resamples for us).
+   * Firefox/Safari may refuse that, and Firefox throws when the MediaStream is connected to a
+   * context with a different sample rate. So: try 16 kHz first, and if creating the context OR
+   * connecting the stream fails, close it and retry at the default rate (our worklet resamples).
+   */
+  async _createContextAndSource() {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+
+    try {
+      const ctx = new AudioCtx({ sampleRate: 16000 });
+      try {
+        const source = ctx.createMediaStreamSource(this.mediaStream);
+        return { ctx, source };
+      } catch (e) {
+        await ctx.close().catch(() => {});
+        throw e;
+      }
+    } catch (e) {
+      const ctx = new AudioCtx();                    // native rate, resampled in the worklet
+      const source = ctx.createMediaStreamSource(this.mediaStream);
+      return { ctx, source };
+    }
+  }
+
   async _startMicCapture() {
     try {
-      // 1. Acquire microphone
       this.mediaStream = await navigator.mediaDevices.getUserMedia({
         audio: {
           channelCount: 1,
@@ -139,27 +157,20 @@ export class MicCaptureManager {
         video: false,
       });
 
-      // 2. Safe AudioContext initialization for Chrome, Firefox, and Safari
-      const AudioCtx = window.AudioContext || window.webkitAudioContext;
-      try {
-        // Attempt 16kHz
-        this.audioContext = new AudioCtx({ sampleRate: 16000 });
-      } catch (e) {
-        // Fallback to native hardware rate (handled by resampling worklet)
-        this.audioContext = new AudioCtx();
-      }
+      const { ctx, source } = await this._createContextAndSource();
+      this.audioContext = ctx;
 
-      if (this.audioContext.state === 'suspended') {
-        await this.audioContext.resume();
+      if (ctx.state === 'suspended') {
+        await ctx.resume();
       }
 
       const blob = new Blob([WORKLET_CODE], { type: 'application/javascript' });
       const workletUrl = URL.createObjectURL(blob);
-      await this.audioContext.audioWorklet.addModule(workletUrl);
+      await ctx.audioWorklet.addModule(workletUrl);
       URL.revokeObjectURL(workletUrl);
 
-      const source = this.audioContext.createMediaStreamSource(this.mediaStream);
-      this.workletNode = new AudioWorkletNode(this.audioContext, 'resampling-pcm-processor');
+      this.workletNode = new AudioWorkletNode(ctx, 'resampling-pcm-processor');
+      this.workletNode.port.postMessage({ isMuted: this.isMuted });   // apply a mute that happened before start
 
       this.workletNode.port.onmessage = (event) => {
         const pcmBuffer = event.data;
