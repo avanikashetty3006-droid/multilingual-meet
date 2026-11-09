@@ -12,10 +12,27 @@ import { SubtitlePanel } from './SubtitlePanel';
 import { useRoomSocket } from './useRoomSocket';
 import { MicCaptureManager } from './micWorklet';
 import { AudioQueue } from './audioQueue';
+import { GoogleAuth } from './GoogleAuth';
+import { LogoReveal } from './LogoReveal';
 
 const CALL_SERVER_URL = import.meta.env.VITE_CALL_SERVER_URL || 'http://localhost:8000';
 
 export default function App() {
+  const [currentUser, setCurrentUser] = useState(() => {
+    try {
+      const saved = localStorage.getItem('vaak_user');
+      return saved ? JSON.parse(saved) : null;
+    } catch (e) {
+      return null;
+    }
+  });
+  const [authStage, setAuthStage] = useState(() => {
+    try {
+      return localStorage.getItem('vaak_user') ? 'intro' : 'auth';
+    } catch (e) {
+      return 'auth';
+    }
+  });
   const [session, setSession] = useState(null); // { roomId, participantId, name, lang, token, livekitUrl }
   const [mainCaptions, setMainCaptions] = useState([]);
   const [overlapCaptions, setOverlapCaptions] = useState([]);
@@ -116,8 +133,38 @@ export default function App() {
     setLanguage(newLang);
   };
 
+  if (authStage === 'auth') {
+    return (
+      <GoogleAuth
+        onAuthenticated={(u) => {
+          setCurrentUser(u);
+          setAuthStage('intro');
+        }}
+      />
+    );
+  }
+
+  if (authStage === 'intro') {
+    return (
+      <LogoReveal
+        onComplete={() => setAuthStage('join')}
+      />
+    );
+  }
+
   if (!session) {
-    return <JoinScreen onJoin={handleJoin} />;
+    return (
+      <JoinScreen
+        onJoin={handleJoin}
+        user={currentUser}
+        onReplayIntro={() => setAuthStage('intro')}
+        onSignOut={() => {
+          localStorage.removeItem('vaak_user');
+          setCurrentUser(null);
+          setAuthStage('auth');
+        }}
+      />
+    );
   }
 
   const isAudioMode = mode.mode === 'audio';
@@ -134,6 +181,12 @@ export default function App() {
       {/* Top Navigation Bar */}
       <header className="conf-header">
         <div className="header-left">
+          <img
+            src="/vaak_logo.png"
+            alt="VAAK"
+            style={{ height: '30px', width: 'auto', objectFit: 'contain', marginRight: '8px' }}
+            onError={(e) => { e.currentTarget.src = './src/assets/vaak_logo.png'; }}
+          />
           <h2 className="room-title">Room: {session.roomId}</h2>
           <span className="participant-count-badge">
             👥 {participants.length || 1} participant{participants.length !== 1 ? 's' : ''}
