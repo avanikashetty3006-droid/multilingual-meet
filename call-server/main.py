@@ -24,7 +24,7 @@ from config import (
     MOCK,
     HEALTH_POLL_INTERVAL_S,
 )
-from rooms import RoomManager, Participant
+from rooms import RoomManager, Participant, Room
 from network_monitor import ListenerNetworkState
 from clients import SpeechServiceClient, SpeakerServiceClient
 
