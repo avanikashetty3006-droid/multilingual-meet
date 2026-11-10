@@ -4,7 +4,9 @@
  * Manages an ordered queue of translated audio URLs.
  * Ensures:
  * - Clips play one at a time, in order, with zero overlap.
- * - Optional ducking callback to duck LiveKit call audio while translated speech is playing.
+ * - Ducking callbacks fire ONCE per burst of clips: onDuckStart when the first clip starts,
+ *   onDuckEnd only when the queue is empty again (no volume jumping between back-to-back clips).
+ * - A clip's cleanup runs at most once (onended + onerror + play() rejection can all fire).
  */
 
 export class AudioQueue {
@@ -12,6 +14,7 @@ export class AudioQueue {
     this.queue = [];
     this.isPlaying = false;
     this.currentAudio = null;
+    this.ducked = false;
     this.onDuckStart = options.onDuckStart || null;
     this.onDuckEnd = options.onDuckEnd || null;
   }
@@ -22,22 +25,39 @@ export class AudioQueue {
     this._playNext();
   }
 
+  _duckStart() {
+    if (this.ducked) return;
+    this.ducked = true;
+    this.onDuckStart?.();
+  }
+
+  _duckEnd() {
+    if (!this.ducked) return;
+    this.ducked = false;
+    this.onDuckEnd?.();
+  }
+
   _playNext() {
-    if (this.isPlaying || this.queue.length === 0) {
+    if (this.isPlaying) return;
+    if (this.queue.length === 0) {
+      this._duckEnd(); // nothing left to say: bring the call audio back up
       return;
     }
 
     const nextUrl = this.queue.shift();
     this.isPlaying = true;
-    this.onDuckStart?.();
+    this._duckStart();
 
     const audio = new Audio(nextUrl);
     this.currentAudio = audio;
 
+    let finished = false;
     const cleanup = () => {
+      if (finished) return;                       // run once only
+      finished = true;
+      if (this.currentAudio !== audio) return;    // clear() already took over: stale event
       this.isPlaying = false;
       this.currentAudio = null;
-      this.onDuckEnd?.();
       this._playNext();
     };
 
@@ -56,10 +76,12 @@ export class AudioQueue {
   clear() {
     this.queue = [];
     if (this.currentAudio) {
+      this.currentAudio.onended = null;
+      this.currentAudio.onerror = null;
       this.currentAudio.pause();
       this.currentAudio = null;
     }
     this.isPlaying = false;
-    this.onDuckEnd?.();
+    this._duckEnd();
   }
 }
