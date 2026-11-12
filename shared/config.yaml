@@ -1,0 +1,26 @@
+# Network Decision Engine Thresholds (shared/config.yaml)
+# Read by Call Server (Role 2) and all services
+
+network:
+  rtt_ms_threshold: 150          # RTT must be < 150 ms for GOOD
+  packet_loss_pct_threshold: 2.0 # Packet loss must be < 2% for GOOD
+  bitrate_kbps_threshold: 500    # Bitrate must be > 500 kbps for GOOD
+  speech_avg_latency_ms_max: 3000 # Speech service avg latency must be < 3000 ms
+  hysteresis_windows: 3          # Require 3 consecutive windows before switching mode
+  window_interval_sec: 2.0       # Net stats evaluation window
+  initial_mode: "subtitle"       # Initial mode until first GOOD result
+  max_queue_depth: 8             # Overlap chunks dropped if speech queue > 8
+
+audio:
+  sample_rate: 16000
+  channels: 1
+  bytes_per_sample: 2            # PCM16
+  frame_samples: 512             # 32 ms frame (1024 bytes)
+  min_chunk_duration_sec: 0.4
+  max_chunk_duration_sec: 4.0
+
+services:
+  call_server_port: 8000
+  speech_service_port: 8001
+  speaker_service_port: 8002
+  frontend_port: 5173
