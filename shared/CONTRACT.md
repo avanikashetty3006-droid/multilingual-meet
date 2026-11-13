@@ -151,3 +151,27 @@ Every service must start with `MOCK=1` for the mock behavior and `MOCK=0` for th
 - Make it run on a laptop without a GPU first (small models, CPU). GPU is optional.
 - Write small tests for your acceptance criteria. After each step, tell me what to run to verify it.
 - Work step by step. Finish and verify a step before starting the next.
+
+## A10. Backend API for Production Frontend (Contract A10)
+
+All JSON, all under `/api/v1`, all except sign-in require the session cookie (`credentials: "include"`). Errors return `{"error":{"code":"...","message":"..."}}` with proper HTTP status.
+
+| Method and path | Purpose |
+|---|---|
+| `POST /auth/google` `{credential}` | Verify the Google ID token (audience = our client ID, email_verified), create or update the user, set httpOnly session cookie, return user profile `{id, email, name, picture, default_lang, theme, ...}` |
+| `POST /auth/logout` | Clear the session cookie |
+| `GET /me`, `PATCH /me` | Profile and settings (`display_name`, `default_lang`, `mic_default`, `cam_default`, `subtitles_only`, `theme`). `DELETE /me` removes the account and data with a confirm step |
+| `POST /meetings` `{title?}` | Create a meeting; returns `{id, title, join_url}` with a server-generated ID (format `xxx-xxxx-xxx`, unguessable, not sequential) |
+| `GET /meetings/{id}` | Info: exists, active or ended, host |
+| `POST /meetings/{id}/join` `{display_name, lang}` | Returns LiveKit token and URL (replaces `/v1/rooms/{room}/join` for signed-in users); records meeting in history |
+| `POST /meetings/{id}/end` | Host ends the meeting for all participants |
+| `GET /me/meetings?cursor=` | History: `{items:[{id, title, started_at, ended_at, duration_s, participant_count, role, active}], next_cursor}` |
+| `DELETE /me/meetings/{id}` | Hides one item from own history |
+| `GET /friends`, `GET /friends/requests` | Friends with presence (`online`, `in_meeting`, `offline`), and pending requests |
+| `GET /users/search?email=` | Exact-email lookup only (no browsing/enumeration of users) |
+| `POST /friends/requests` `{email}` | Send friend request |
+| `POST /friends/requests/{id}/accept`, `.../decline` | Accept or decline request (mutual: both must agree) |
+| `DELETE /friends/{user_id}` | Remove friend |
+| `POST /meetings/{id}/invite` `{user_id}` | In-app invite to a friend |
+| `WS /ws/user` | Pushes presence, `friend_request` and `invite` events to the signed-in user |
+

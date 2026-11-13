@@ -1,0 +1,119 @@
+version: '3.8'
+
+services:
+  # ----------------------------------------------------------------------------
+  # 1. Frontend (Role 1: React + Vite + Nginx Reverse Proxy)
+  # ----------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "80:80"
+    environment:
+      - VITE_GOOGLE_CLIENT_ID=${VITE_GOOGLE_CLIENT_ID}
+      - VITE_API_BASE_URL=/api
+      - VITE_LIVEKIT_URL=${LIVEKIT_URL:-ws://localhost:7880}
+    depends_on:
+      - call-server
+    restart: unless-stopped
+    networks:
+      - vaak-net
+
+  # ----------------------------------------------------------------------------
+  # 2. Call Server (Role 2: FastAPI Hub, Contract A4, A5, A6, A10)
+  # ----------------------------------------------------------------------------
+  call-server:
+    build:
+      context: ./call-server
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-vaak_user}:${POSTGRES_PASSWORD:-vaak_secret}@postgres:5432/${POSTGRES_DB:-vaak_db}
+      - LIVEKIT_URL=${LIVEKIT_URL:-http://livekit:7880}
+      - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:-devkey}
+      - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-secret}
+      - SPEECH_SERVICE_URL=http://speech-service:8001
+      - SPEAKER_SERVICE_URL=http://speaker-service:8002
+      - GOOGLE_CLIENT_ID=${VITE_GOOGLE_CLIENT_ID}
+      - SESSION_SECRET=${SESSION_SECRET:-vaak-super-secure-production-secret-key-32b}
+      - MOCK=0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      livekit:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - vaak-net
+
+  # ----------------------------------------------------------------------------
+  # 3. Speech Service (Role 3: ASR -> MT -> TTS)
+  # ----------------------------------------------------------------------------
+  speech-service:
+    build:
+      context: ./speech-service
+    ports:
+      - "8001:8001"
+    environment:
+      - PORT=8001
+      - MOCK=0
+    restart: unless-stopped
+    networks:
+      - vaak-net
+
+  # ----------------------------------------------------------------------------
+  # 4. Speaker Service (Role 4: Silero VAD + Token Passing)
+  # ----------------------------------------------------------------------------
+  speaker-service:
+    build:
+      context: ./speaker-service
+    ports:
+      - "8002:8002"
+    environment:
+      - PORT=8002
+      - MOCK=0
+    restart: unless-stopped
+    networks:
+      - vaak-net
+
+  # ----------------------------------------------------------------------------
+  # 5. Database (PostgreSQL 15)
+  # ----------------------------------------------------------------------------
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-vaak_user}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-vaak_secret}
+      - POSTGRES_DB=${POSTGRES_DB:-vaak_db}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-vaak_user} -d ${POSTGRES_DB:-vaak_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - vaak-net
+
+  # ----------------------------------------------------------------------------
+  # 6. WebRTC SFU Server (LiveKit)
+  # ----------------------------------------------------------------------------
+  livekit:
+    image: livekit/livekit-server:latest
+    command: --keys "${LIVEKIT_API_KEY:-devkey}: ${LIVEKIT_API_SECRET:-secret}" --dev
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+      - "50000-50200:50000-50200/udp"
+    restart: unless-stopped
+    networks:
+      - vaak-net
+
+volumes:
+  postgres_data:
+
+networks:
+  vaak-net:
+    driver: bridge
