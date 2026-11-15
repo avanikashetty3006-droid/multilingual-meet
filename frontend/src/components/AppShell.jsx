@@ -9,6 +9,7 @@ import {
   Video,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { InviteToasts } from './InviteToasts';
 
 export function AppShell() {
   const { user, signOut } = useAuth();
@@ -116,6 +117,7 @@ export function AppShell() {
       <main className="app-main" id="main-content">
         <Outlet />
       </main>
+      <InviteToasts />
 
       {/* Mobile Bottom Navigation Bar */}
       <nav className="mobile-nav-bar" aria-label="Mobile Navigation">

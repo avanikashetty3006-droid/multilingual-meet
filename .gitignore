@@ -49,3 +49,13 @@ speech-service/audio/*.wav
 *.swo
 .DS_Store
 Thumbs.db
+
+# local runtime files
+vaak.db
+vaak.db-*
+call-server/vaak.db*
+metrics.csv
+latency_report.png
+latency_vs_users.png
+speech-service/models/
+speech-service/audio/*.wav

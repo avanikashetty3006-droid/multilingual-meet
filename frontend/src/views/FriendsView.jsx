@@ -10,9 +10,12 @@ import {
   Mail,
   Send,
 } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { api, ApiError } from '../api/client';
+import { USER_EVENT, pickActiveMeeting } from '../utils/userEvents';
 
 export function FriendsView() {
+  const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState('friends'); // 'friends' | 'requests'
   const [friends, setFriends] = useState([]);
   const [requests, setRequests] = useState([]);
@@ -43,31 +46,17 @@ export function FriendsView() {
   useEffect(() => {
     loadData();
 
-    // Setup user WebSocket for presence events if server supports it
-    const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsHost = window.location.host;
-    const wsUrl = `${wsProto}//${wsHost}/ws/user`;
-
-    let ws = null;
-    try {
-      ws = new WebSocket(wsUrl);
-      ws.onmessage = (event) => {
-        try {
-          const msg = JSON.parse(event.data);
-          if (msg.type === 'presence') {
-            setFriends((prev) =>
-              prev.map((f) => (f.id === msg.user_id ? { ...f, presence: msg.presence } : f))
-            );
-          } else if (msg.type === 'friend_request' || msg.type === 'friend_accepted') {
-            loadData();
-          }
-        } catch (e) {}
-      };
-    } catch (e) {}
-
-    return () => {
-      if (ws) ws.close();
+    // Presence and friend events come from the single /ws/user socket owned by <InviteToasts/> in the app shell.
+    const onEvent = (e) => {
+      const msg = e.detail;
+      if (msg.type === 'presence') {
+        setFriends((prev) => prev.map((f) => (f.id === msg.user_id ? { ...f, presence: msg.presence } : f)));
+      } else if (['friend_request', 'friend_accepted', 'friend_removed'].includes(msg.type)) {
+        loadData();
+      }
     };
+    window.addEventListener(USER_EVENT, onEvent);
+    return () => window.removeEventListener(USER_EVENT, onEvent);
   }, []);
 
   const handleSearch = async (e) => {
@@ -134,10 +123,34 @@ export function FriendsView() {
     }
   };
 
-  const handleInviteToMeeting = (friend) => {
-    const inviteLink = `${window.location.origin}`;
-    navigator.clipboard.writeText(inviteLink);
-    alert(`Meeting invite link copied for ${friend.display_name}! Send it via chat or email.`);
+  const [inviting, setInviting] = useState(null);
+
+  const handleInviteToMeeting = async (friend) => {
+    setInviting(friend.id);
+    try {
+      // Invite to the meeting you are hosting/in; if there is none, offer to create one.
+      const hist = await api.meetings.getHistory();
+      let meeting = pickActiveMeeting(hist?.items);
+      let created = false;
+      if (!meeting) {
+        if (!confirm(`You have no active meeting. Create a new one and invite ${friend.display_name}?`)) return;
+        meeting = await api.meetings.create();
+        created = true;
+      }
+      const link = `${window.location.origin}/m/${meeting.id}`;
+      const res = await api.meetings.invite(meeting.id, friend.id);
+      try { await navigator.clipboard.writeText(link); } catch { /* clipboard may be blocked */ }
+      alert(
+        (res && res.delivered === false
+          ? `${friend.display_name} is offline; the invite is waiting for them (valid for 1 hour). `
+          : `Invite sent to ${friend.display_name}. `) + 'The meeting link was copied.'
+      );
+      if (created) navigate(`/m/${meeting.id}`);
+    } catch (err) {
+      alert(err?.message || 'Could not send the invite.');
+    } finally {
+      setInviting(null);
+    }
   };
 
   const inboundRequests = requests.filter((r) => r.direction === 'inbound');
@@ -348,6 +361,7 @@ export function FriendsView() {
                       onClick={() => handleInviteToMeeting(friend)}
                       className="btn-outline"
                       style={{ padding: '6px 10px', fontSize: '0.78rem' }}
+                      disabled={inviting === friend.id}
                       title="Invite to meeting"
                     >
                       <Share2 size={13} />
