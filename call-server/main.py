@@ -1,4 +1,4 @@
-"""Call Server Hub - FastAPI Implementation.
+﻿"""Call Server Hub - FastAPI Implementation.
 
 Role 2: Hub connecting Frontend (Role 1), Speech Service (Role 3), and Speaker Service (Role 4).
 """
@@ -371,7 +371,7 @@ app.add_middleware(
 
 if a10:
     app.mount("/api/v1", a10.rest_app)
-    app.add_websocket_route("/ws/user", a10.user_ws)
+    from starlette.routing import WebSocketRoute; app.router.routes.append(WebSocketRoute("/ws/user", a10.user_ws))
 
 
 async def refuse_if_meeting_closed(websocket: WebSocket, room_id: str) -> bool:
