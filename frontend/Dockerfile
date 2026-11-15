@@ -1,34 +1,26 @@
-# ==============================================================================
-# Multi-Stage Dockerfile for VAAK Production Frontend
-# ==============================================================================
-
-# Stage 1: Build React / Vite application
+# Multi-stage build: React/Vite bundle -> nginx.
+# IMPORTANT: VITE_* variables are baked into the JS at BUILD time, so they are build ARGs (not runtime env).
 FROM node:20-alpine AS builder
-
 WORKDIR /app
 
-# Copy package descriptors first for Docker layer caching
 COPY package.json package-lock.json* ./
-
 RUN npm ci --prefer-offline --no-audit
 
 COPY . .
 
-# Build production bundle with route-level code splitting
+ARG VITE_GOOGLE_CLIENT_ID
+ARG VITE_API_BASE_URL=/api
+ARG VITE_LIVEKIT_URL=
+ENV VITE_GOOGLE_CLIENT_ID=$VITE_GOOGLE_CLIENT_ID \
+    VITE_API_BASE_URL=$VITE_API_BASE_URL \
+    VITE_LIVEKIT_URL=$VITE_LIVEKIT_URL \
+    VITE_API_MOCK=0
+RUN test -n "$VITE_GOOGLE_CLIENT_ID" || (echo "ERROR: build arg VITE_GOOGLE_CLIENT_ID is empty" && exit 1)
 RUN npm run build
 
-# Stage 2: Minimal Nginx web server
-FROM nginx:alpine-slim
-
-# Remove default nginx website
+FROM nginx:1.27-alpine-slim
 RUN rm -rf /usr/share/nginx/html/*
-
-# Copy built artifacts from builder stage
 COPY --from=builder /app/dist /usr/share/nginx/html
-
-# Copy optimized nginx reverse proxy & CSP configuration
-COPY nginx.conf /etc/nginx/conf.d/default.conf
-
+# *.template files are run through envsubst at container start (only variables that exist in the environment)
+COPY nginx.conf.template /etc/nginx/templates/default.conf.template
 EXPOSE 80
-
-CMD ["nginx", "-g", "daemon off;"]

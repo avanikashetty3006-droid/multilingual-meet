@@ -1,0 +1,12 @@
+--- frontend/src/views/LobbyView.jsx	2026-11-13 10:45:14.203019603 +0000
++++ frontend/src/views/LobbyView.jsx	2026-11-15 11:29:23.659477693 +0000
+@@ -218,7 +218,8 @@
+ 
+       setActiveSession({
+         roomId: meetingId,
+-        participantId: `p-${Math.random().toString(36).substring(2, 8)}`,
++        // The server issues the participant id and records it in history; fall back only for the old dev mock.
++        participantId: res.participant_id || `p-${Math.random().toString(36).substring(2, 8)}`,
+         name: displayName.trim(),
+         lang: listeningLang,
+         token: res.livekit_token,

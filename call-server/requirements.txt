@@ -7,3 +7,7 @@ pyyaml>=6.0.1
 python-multipart>=0.0.9
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
+# --- contract A10 (sign-in + database) ---
+google-auth>=2.29.0
+requests>=2.31.0
+psycopg[binary]>=3.1

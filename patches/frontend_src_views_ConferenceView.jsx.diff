@@ -1,0 +1,39 @@
+--- frontend/src/views/ConferenceView.jsx	2026-11-13 10:45:14.202378668 +0000
++++ frontend/src/views/ConferenceView.jsx	2026-11-15 11:29:23.659073000 +0000
+@@ -15,8 +15,10 @@
+ import { AudioQueue } from '../audioQueue';
+ import { createStatsTracker } from '../netStats';
+ import { api } from '../api/client';
++import { wsUrl } from '../utils/wsUrl';
+ 
+-const CALL_SERVER_URL = import.meta.env.VITE_CALL_SERVER_URL || 'http://localhost:8000';
++// Empty by default: URLs are derived from the page address (see utils/wsUrl.js). Optional dev override only.
++const CALL_SERVER_URL = import.meta.env.VITE_CALL_SERVER_URL || '';
+ 
+ export function ConferenceView({ session, onLeave }) {
+   const [currentLang, setCurrentLang] = useState(session.lang || 'hi');
+@@ -97,6 +99,10 @@
+     setLanguage,
+   } = useRoomSocket({
+     callServerUrl: CALL_SERVER_URL,
++    onMeetingEnded: () => {
++      alert('The host ended this meeting.');
++      handleLeaveCall();
++    },
+     roomId: session.roomId,
+     participantId: session.participantId,
+     name: session.name,
+@@ -111,9 +117,10 @@
+     if (!session.roomId || !session.participantId) return;
+ 
+     setMicError(null);
+-    const wsProto = CALL_SERVER_URL.startsWith('https') ? 'wss' : 'ws';
+-    const host = CALL_SERVER_URL.replace(/^https?:\/\//, '');
+-    const audioWsUrl = `${wsProto}://${host}/ws/audio/${session.roomId}/${session.participantId}`;
++    const audioWsUrl = wsUrl(
++      `/ws/audio/${encodeURIComponent(session.roomId)}/${encodeURIComponent(session.participantId)}`,
++      CALL_SERVER_URL
++    );
+ 
+     const micManager = new MicCaptureManager(audioWsUrl, {
+       onError: (errMsg) => {

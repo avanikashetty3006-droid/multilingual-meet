@@ -1,5 +1,7 @@
+# Light set: MOCK=1 service + all fast tests
 fastapi
 uvicorn
 python-multipart
 pytest
 httpx
+numpy

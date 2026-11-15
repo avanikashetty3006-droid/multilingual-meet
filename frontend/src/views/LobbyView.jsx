@@ -218,7 +218,8 @@ export function LobbyView() {
 
       setActiveSession({
         roomId: meetingId,
-        participantId: `p-${Math.random().toString(36).substring(2, 8)}`,
+        // The server issues the participant id and records it in history; fall back only for the old dev mock.
+        participantId: res.participant_id || `p-${Math.random().toString(36).substring(2, 8)}`,
         name: displayName.trim(),
         lang: listeningLang,
         token: res.livekit_token,

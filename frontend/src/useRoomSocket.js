@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
+import { wsUrl as buildWsUrl } from './utils/wsUrl';
 
 /**
  * Hook for managing the Call Server room WebSocket connection.
@@ -24,6 +25,7 @@ export function useRoomSocket({
   name,
   lang,
   onTranslation,
+  onMeetingEnded, // () => void, called when the host ended the meeting (or it is closed)
   getLiveKitStats, // () => Promise<{ rtt_ms, packet_loss_pct, bitrate_kbps, jitter_ms } | null>
   simulatePoor = false,
 }) {
@@ -43,6 +45,8 @@ export function useRoomSocket({
   nameRef.current = name;
   const langRef = useRef(lang);
   langRef.current = lang;
+  const onEndedRef = useRef(onMeetingEnded);
+  onEndedRef.current = onMeetingEnded;
   const simulateRef = useRef(simulatePoor);
   simulateRef.current = simulatePoor;
 
@@ -60,13 +64,14 @@ export function useRoomSocket({
   }, [send]);
 
   useEffect(() => {
-    if (!callServerUrl || !roomId || !participantId) return;
+    if (!roomId || !participantId) return;
 
     closedByUsRef.current = false;
 
-    const wsProtocol = callServerUrl.startsWith('https') ? 'wss' : 'ws';
-    const cleanHost = callServerUrl.replace(/^https?:\/\//, '');
-    const wsUrl = `${wsProtocol}://${cleanHost}/ws/room/${roomId}?participant_id=${participantId}`;
+    const wsUrl = buildWsUrl(
+      `/ws/room/${encodeURIComponent(roomId)}?participant_id=${encodeURIComponent(participantId)}`,
+      callServerUrl
+    );
 
     function connect() {
       if (closedByUsRef.current) return;
@@ -135,6 +140,10 @@ export function useRoomSocket({
             case 'translation':
               onTranslation?.(msg);
               break;
+            case 'meeting_ended':
+              closedByUsRef.current = true; // never reconnect to a finished meeting
+              onEndedRef.current?.();
+              break;
             case 'error':
               console.error('Call server error:', msg.message);
               break;
@@ -146,8 +155,12 @@ export function useRoomSocket({
         }
       };
 
-      ws.onclose = () => {
+      ws.onclose = (ev) => {
         setConnected(false);
+        if (ev && ev.code === 4410 && !closedByUsRef.current) {
+          closedByUsRef.current = true;
+          onEndedRef.current?.();
+        }
         if (statsIntervalRef.current) clearInterval(statsIntervalRef.current);
 
         // Ghost reconnect fix: only reconnect if NOT intentionally closed by us

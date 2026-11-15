@@ -1,118 +1,121 @@
-version: '3.8'
+# VAAK production stack. Copy .env.example to .env and fill EVERY value first (missing ones stop the build on purpose).
+#   docker compose --profile tls up -d --build      # with automatic HTTPS (Caddy)  -> set PROXY_HOPS=2
+#   docker compose up -d --build                    # plain http on ${FRONTEND_PORT} (put your own TLS proxy in front)
+# Role 3 / Role 4 must each provide a Dockerfile in speech-service/ and speaker-service/.
+name: vaak
 
 services:
-  # ----------------------------------------------------------------------------
-  # 1. Frontend (Role 1: React + Vite + Nginx Reverse Proxy)
-  # ----------------------------------------------------------------------------
   frontend:
     build:
       context: ./frontend
-      dockerfile: Dockerfile
-    ports:
-      - "80:80"
+      args:
+        VITE_GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:?set GOOGLE_CLIENT_ID in .env}
+        VITE_API_BASE_URL: /api
     environment:
-      - VITE_GOOGLE_CLIENT_ID=${VITE_GOOGLE_CLIENT_ID}
-      - VITE_API_BASE_URL=/api
-      - VITE_LIVEKIT_URL=${LIVEKIT_URL:-ws://localhost:7880}
+      LIVEKIT_PUBLIC_HOST: ${LIVEKIT_PUBLIC_HOST:?set LIVEKIT_PUBLIC_HOST in .env (e.g. lk.example.com)}
+    ports:
+      - "${FRONTEND_PORT:-8080}:80"
     depends_on:
       - call-server
     restart: unless-stopped
-    networks:
-      - vaak-net
+    networks: [vaak-net]
 
-  # ----------------------------------------------------------------------------
-  # 2. Call Server (Role 2: FastAPI Hub, Contract A4, A5, A6, A10)
-  # ----------------------------------------------------------------------------
   call-server:
     build:
-      context: ./call-server
-    ports:
-      - "8000:8000"
+      context: .
+      dockerfile: call-server/Dockerfile
     environment:
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-vaak_user}:${POSTGRES_PASSWORD:-vaak_secret}@postgres:5432/${POSTGRES_DB:-vaak_db}
-      - LIVEKIT_URL=${LIVEKIT_URL:-http://livekit:7880}
-      - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:-devkey}
-      - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-secret}
-      - SPEECH_SERVICE_URL=http://speech-service:8001
-      - SPEAKER_SERVICE_URL=http://speaker-service:8002
-      - GOOGLE_CLIENT_ID=${VITE_GOOGLE_CLIENT_ID}
-      - SESSION_SECRET=${SESSION_SECRET:-vaak-super-secure-production-secret-key-32b}
-      - MOCK=0
+      DATABASE_URL: postgresql://${POSTGRES_USER:-vaak}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-vaak}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:?}
+      SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET (>= 32 random chars)}
+      PUBLIC_URL: ${PUBLIC_URL:?set PUBLIC_URL (e.g. https://meet.example.com)}
+      COOKIE_SECURE: ${COOKIE_SECURE:-1}
+      TRUST_PROXY: "1"
+      TRUSTED_PROXY_HOPS: ${PROXY_HOPS:-1}
+      A10_STRICT_ROOMS: "1"
+      LIVEKIT_URL: ${LIVEKIT_URL:?set LIVEKIT_URL, the PUBLIC wss:// address browsers use (e.g. wss://lk.example.com)}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:?}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:?}
+      SPEECH_SERVICE_URL: http://speech-service:8001
+      SPEAKER_SERVICE_URL: http://speaker-service:8002
+      MOCK: ${MOCK:-0}
     depends_on:
       postgres:
         condition: service_healthy
-      livekit:
-        condition: service_started
     restart: unless-stopped
-    networks:
-      - vaak-net
+    networks: [vaak-net]
 
-  # ----------------------------------------------------------------------------
-  # 3. Speech Service (Role 3: ASR -> MT -> TTS)
-  # ----------------------------------------------------------------------------
   speech-service:
-    build:
-      context: ./speech-service
-    ports:
-      - "8001:8001"
+    build: ./speech-service
     environment:
-      - PORT=8001
-      - MOCK=0
+      PORT: "8001"
+      MOCK: ${MOCK:-0}
+      SPEECH_PUBLIC_URL: ${PUBLIC_URL}
     restart: unless-stopped
-    networks:
-      - vaak-net
+    networks: [vaak-net]
 
-  # ----------------------------------------------------------------------------
-  # 4. Speaker Service (Role 4: Silero VAD + Token Passing)
-  # ----------------------------------------------------------------------------
   speaker-service:
-    build:
-      context: ./speaker-service
-    ports:
-      - "8002:8002"
+    build: ./speaker-service
     environment:
-      - PORT=8002
-      - MOCK=0
+      PORT: "8002"
+      MOCK: ${MOCK:-0}
     restart: unless-stopped
-    networks:
-      - vaak-net
+    networks: [vaak-net]
 
-  # ----------------------------------------------------------------------------
-  # 5. Database (PostgreSQL 15)
-  # ----------------------------------------------------------------------------
   postgres:
-    image: postgres:15-alpine
+    image: postgres:16-alpine
     environment:
-      - POSTGRES_USER=${POSTGRES_USER:-vaak_user}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-vaak_secret}
-      - POSTGRES_DB=${POSTGRES_DB:-vaak_db}
+      POSTGRES_USER: ${POSTGRES_USER:-vaak}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+      POSTGRES_DB: ${POSTGRES_DB:-vaak}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-vaak_user} -d ${POSTGRES_DB:-vaak_db}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-vaak} -d ${POSTGRES_DB:-vaak}"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
     restart: unless-stopped
-    networks:
-      - vaak-net
+    networks: [vaak-net]
 
-  # ----------------------------------------------------------------------------
-  # 6. WebRTC SFU Server (LiveKit)
-  # ----------------------------------------------------------------------------
   livekit:
-    image: livekit/livekit-server:latest
-    command: --keys "${LIVEKIT_API_KEY:-devkey}: ${LIVEKIT_API_SECRET:-secret}" --dev
+    # Pin a real release tag from https://hub.docker.com/r/livekit/livekit-server/tags and bump it deliberately.
+    image: livekit/livekit-server:${LIVEKIT_IMAGE_TAG:-v1.8.0}
+    environment:
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY:?}: ${LIVEKIT_API_SECRET:?}"
+      LIVEKIT_CONFIG: |
+        port: 7880
+        rtc:
+          tcp_port: 7881
+          port_range_start: 50000
+          port_range_end: 50200
+          use_external_ip: true
     ports:
-      - "7880:7880"
       - "7881:7881"
       - "50000-50200:50000-50200/udp"
+      - "127.0.0.1:7880:7880"      # signalling is reached through Caddy (wss://LIVEKIT_PUBLIC_HOST)
     restart: unless-stopped
-    networks:
-      - vaak-net
+    networks: [vaak-net]
+
+  caddy:
+    profiles: ["tls"]
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      SITE_HOST: ${SITE_HOST:?set SITE_HOST (e.g. meet.example.com)}
+      LIVEKIT_PUBLIC_HOST: ${LIVEKIT_PUBLIC_HOST:?}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on: [frontend, livekit]
+    restart: unless-stopped
+    networks: [vaak-net]
 
 volumes:
   postgres_data:
+  caddy_data:
 
 networks:
   vaak-net:

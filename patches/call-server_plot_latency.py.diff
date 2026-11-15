@@ -1,0 +1,88 @@
+--- call-server/plot_latency.py	2026-11-09 07:30:38.334718601 +0000
++++ call-server/plot_latency.py	2026-11-15 11:30:28.802487220 +0000
+@@ -7,6 +7,11 @@
+ 
+ Usage:
+     python plot_latency.py [path/to/metrics.csv]
++
++Scaling report (latency vs number of users), one CSV per load-test run, label = number of users:
++    python plot_latency.py 2=run2.csv 5=run5.csv 10=run10.csv 20=run20.csv
++Prints a table (avg / P50 / P90 / P99 e2e, error-free chunk count) and saves latency_vs_users.png
++next to the first CSV.
+ """
+ 
+ import sys
+@@ -111,9 +116,72 @@
+     print(f"Chart saved to: {output_img.resolve()}")
+ 
+ 
++def percentile_of(sorted_vals, p):
++    if not sorted_vals:
++        return 0.0
++    return sorted_vals[min(int(len(sorted_vals) * p), len(sorted_vals) - 1)]
++
++
++def scale_report(pairs, output_img: Path):
++    """pairs = [(users:int, csv_path:Path)]; prints a table and plots latency vs users."""
++    rows = []
++    for users, path in sorted(pairs):
++        recs = parse_metrics(path)
++        vals = sorted(r["e2e_ms"] for r in recs)
++        if not vals:
++            print(f"{users:>5} users : no data in {path}")
++            continue
++        rows.append((users, len(vals), sum(vals) / len(vals), percentile_of(vals, 0.5),
++                     percentile_of(vals, 0.9), percentile_of(vals, 0.99)))
++    print("=" * 62)
++    print(f"{'users':>6} {'chunks':>7} {'avg ms':>9} {'p50 ms':>9} {'p90 ms':>9} {'p99 ms':>9}")
++    for u, n, avg, p50, p90, p99 in rows:
++        print(f"{u:>6} {n:>7} {avg:>9.0f} {p50:>9.0f} {p90:>9.0f} {p99:>9.0f}")
++    print("=" * 62)
++    if not rows:
++        return rows
++    try:
++        import matplotlib
++        matplotlib.use("Agg")
++        import matplotlib.pyplot as plt
++    except ImportError:
++        print("matplotlib not installed. Run 'pip install matplotlib' to generate the chart.")
++        return rows
++    xs = [r[0] for r in rows]
++    fig, ax = plt.subplots(figsize=(8, 5))
++    ax.plot(xs, [r[2] for r in rows], marker="o", label="average", color="#2563eb")
++    ax.plot(xs, [r[3] for r in rows], marker="o", label="P50", color="#10b981")
++    ax.plot(xs, [r[4] for r in rows], marker="o", label="P90", color="#f59e0b")
++    ax.plot(xs, [r[5] for r in rows], marker="o", label="P99", color="#ef4444")
++    ax.axhline(3000, color="#6b7280", linestyle="--", linewidth=1, label="3 s audio-mode limit")
++    ax.set_xlabel("Users in the room")
++    ax.set_ylabel("End-to-end latency (ms)")
++    ax.set_title("Latency vs number of users")
++    ax.set_xticks(xs)
++    ax.grid(True, linestyle=":", alpha=0.6)
++    ax.legend()
++    fig.tight_layout()
++    fig.savefig(output_img, dpi=200)
++    print(f"Chart saved to: {output_img.resolve()}")
++    return rows
++
++
+ def main():
++    args = sys.argv[1:]
++    if any("=" in a for a in args):
++        pairs = []
++        for a in args:
++            label, _, path = a.partition("=")
++            try:
++                pairs.append((int(label), Path(path)))
++            except ValueError:
++                print(f"Bad argument '{a}'. Use <users>=<file.csv>, e.g. 5=run5.csv")
++                return
++        scale_report(pairs, pairs[0][1].parent / "latency_vs_users.png")
++        return
++
+     default_csv = Path(__file__).resolve().parent / "metrics.csv"
+-    csv_path = Path(sys.argv[1]) if len(sys.argv) > 1 else default_csv
++    csv_path = Path(args[0]) if args else default_csv
+     output_png = csv_path.parent / "latency_report.png"
+ 
+     records = parse_metrics(csv_path)

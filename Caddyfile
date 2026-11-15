@@ -1,0 +1,8 @@
+# Automatic HTTPS (Let's Encrypt). DNS for SITE_HOST and LIVEKIT_PUBLIC_HOST must point at this server.
+{$SITE_HOST} {
+	reverse_proxy frontend:80
+}
+
+{$LIVEKIT_PUBLIC_HOST} {
+	reverse_proxy livekit:7880
+}
