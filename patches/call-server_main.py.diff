@@ -1,0 +1,134 @@
+--- call-server/main.py	2026-11-09 07:30:38.334718601 +0000
++++ call-server/main.py	2026-11-15 06:20:04.090515496 +0000
+@@ -7,6 +7,7 @@
+ import csv
+ import json
+ import logging
++import os
+ import time
+ from contextlib import asynccontextmanager
+ from pathlib import Path
+@@ -32,6 +33,8 @@
+     should_drop_overlap_for_queue,
+ )
+ from clients import SpeechServiceClient, SpeakerServiceClient
++from a10 import create_a10, RoomBridge  # contract A10 (auth, meetings, history, friends, presence)
++from a10.settings import Settings as A10Settings
+ 
+ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+ logger = logging.getLogger("call-server")
+@@ -309,6 +312,39 @@
+         )
+ 
+ 
++class MainBridge(RoomBridge):
++    """Lets the A10 API reuse this file's LiveKit token code and room manager."""
++
++    async def join(self, meeting_id, participant_id, name, lang):
++        return {
++            "livekit_token": generate_livekit_token(meeting_id, participant_id, name),
++            "livekit_url": LIVEKIT_URL,
++        }
++
++    async def end_meeting(self, meeting_id):
++        room = await room_manager.get_room(meeting_id)
++        if not room:
++            return
++        await room.broadcast_json({"type": "meeting_ended", "room_id": meeting_id})
++        for p in list(room.participants.values()):
++            if p.ws is not None:
++                try:
++                    await p.ws.close(code=4410)
++                except Exception:
++                    pass
++
++
++def build_a10():
++    """A10 turns on only when SESSION_SECRET is set, so the old mock/load-test flow still runs without it."""
++    if not os.getenv("SESSION_SECRET"):
++        logger.warning("SESSION_SECRET not set: A10 API (/api/v1, /ws/user) is DISABLED. Set it to enable sign-in.")
++        return None
++    return create_a10(MainBridge(), A10Settings.from_env())
++
++
++a10 = build_a10()
++
++
+ @asynccontextmanager
+ async def lifespan(app: FastAPI):
+     net_task = asyncio.create_task(network_evaluator_loop())
+@@ -321,14 +357,35 @@
+ 
+ app = FastAPI(title="Multilingual Meet Call Server (Role 2)", lifespan=lifespan)
+ 
++# CORS: the browser app talks to us through the same domain (nginx proxies /api), so no CORS is needed in
++# production. Only when ALLOWED_ORIGINS is set do we allow those exact origins WITH cookies. A wildcard is
++# never combined with credentials (that would let any website use a signed-in user's cookie).
++_origins = [o.strip().rstrip("/") for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()]
+ app.add_middleware(
+     CORSMiddleware,
+-    allow_origins=["*"],
+-    allow_credentials=True,
++    allow_origins=_origins or ["*"],
++    allow_credentials=bool(_origins),
+     allow_methods=["*"],
+     allow_headers=["*"],
+ )
+ 
++if a10:
++    app.mount("/api/v1", a10.rest_app)
++    app.add_websocket_route("/ws/user", a10.user_ws)
++
++
++async def refuse_if_meeting_closed(websocket: WebSocket, room_id: str) -> bool:
++    """True (and the socket is closed) when this room is an ended / unknown meeting."""
++    if a10 and not await a10.room_allowed(room_id):
++        await websocket.accept()
++        try:
++            await websocket.send_json({"type": "meeting_ended", "room_id": room_id})
++        except Exception:
++            pass
++        await websocket.close(code=4410)
++        return True
++    return False
++
+ 
+ class JoinRequest(BaseModel):
+     participant_id: str
+@@ -347,6 +404,9 @@
+ 
+ @app.post("/v1/rooms/{room_id}/join")
+ async def join_room(room_id: str, body: JoinRequest):
++    # Legacy unauthenticated join (load-test bots, mock mode). Off when A10 runs in strict mode.
++    if a10 and a10.s.strict_rooms:
++        raise HTTPException(status_code=404, detail="Use POST /api/v1/meetings/{id}/join")
+     # FIX 7: validate supported languages
+     if body.lang not in SUPPORTED_LANGUAGES:
+         raise HTTPException(
+@@ -367,6 +427,8 @@
+ 
+ @app.websocket("/ws/room/{room_id}")
+ async def room_events_ws(websocket: WebSocket, room_id: str, participant_id: Optional[str] = None):
++    if await refuse_if_meeting_closed(websocket, room_id):
++        return
+     await websocket.accept()
+     room = await room_manager.get_or_create_room(room_id)
+     current_pid = participant_id
+@@ -445,6 +507,8 @@
+     finally:
+         if current_pid:
+             await room_manager.remove_participant(room_id, current_pid)
++            if a10:
++                await a10.on_participant_left(room_id, current_pid)  # sets left_at, updates friends' presence
+             remaining_room = await room_manager.get_room(room_id)
+             if remaining_room:
+                 await remaining_room.broadcast_json({
+@@ -588,6 +652,8 @@
+ 
+ @app.websocket("/ws/audio/{room_id}/{participant_id}")
+ async def audio_stream_ws(websocket: WebSocket, room_id: str, participant_id: str):
++    if await refuse_if_meeting_closed(websocket, room_id):
++        return
+     await websocket.accept()
+     room = await room_manager.get_or_create_room(room_id)
+ 
