@@ -5,3 +5,6 @@ faster-whisper>=1.0.3
 ctranslate2>=4.3.0
 transformers>=4.41.0
 sentencepiece>=0.2.0
+# TTS engines (TTS_ENGINE=mms,gtts)
+gTTS>=2.5.0
+miniaudio>=1.59

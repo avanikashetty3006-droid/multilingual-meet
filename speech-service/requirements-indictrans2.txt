@@ -1,0 +1,6 @@
+# Only for MT_ENGINE=indictrans2 (the default). Install after requirements-real.txt:
+#   pip install -r requirements-indictrans2.txt
+# Also needs a Hugging Face login (see README 1b).
+IndicTransToolkit
+sacremoses>=0.1.1
+huggingface_hub>=0.23
