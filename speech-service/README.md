@@ -2,7 +2,7 @@
 
 FastAPI service on port 8001: one audio chunk in, transcript + translations (+ optional speech) out (contract A6).
 
-**Status:** mock (`MOCK=1`) done earlier. Real pipeline (`MOCK=0`) is in this version: faster-whisper (ASR) ->
+**Status:** mock (`MOCK=1`) done earlier; the real pipeline merges the team's IndicTrans2 and gTTS work (see 1b). Real pipeline (`MOCK=0`) is in this version: faster-whisper (ASR) ->
 NLLB-200 600M via CTranslate2 (MT) -> facebook/mms-tts-* (TTS). The model code has NOT yet been run on real models by the author
 of this pack (see "Status of testing" at the bottom): do the first-run steps below and record your numbers.
 
@@ -18,6 +18,16 @@ pip install -r requirements-real.txt                              # faster-whisp
 ```
 Whisper (`base` about 150 MB) and the MMS voices (about 140 MB each) download automatically on first start into the
 default Hugging Face cache (outside the repo). `models/` is in `.gitignore`.
+
+## 1b. Choose the translation and voice engines (new)
+| Variable | Values | Notes |
+|---|---|---|
+| `MT_ENGINE` | `indictrans2` (default), `nllb` | `indictrans2` = AI4Bharat IndicTrans2 200M, Indic to Indic pivots through English. Gated on Hugging Face: run `huggingface-cli login` once and accept the terms on https://huggingface.co/ai4bharat/indictrans2-en-indic-dist-200M and https://huggingface.co/ai4bharat/indictrans2-indic-en-dist-200M. Install with `pip install -r requirements-indictrans2.txt` (it compiles a small package; if that fails on Windows install "Visual Studio Build Tools" or use `nllb`). `nllb` = no login, needs `.\scripts\convert_nllb.ps1` once. |
+| `TTS_ENGINE` | `mms,gtts` (default), `mms`, `gtts`, `gtts,mms` | engines are tried in this order for each sentence. `mms` is offline, `gtts` needs internet (MP3 converted to WAV with `miniaudio`). |
+
+There is deliberately **no fallback to Google Translate web calls or to a dictionary of canned sentences**: if the chosen
+MT model cannot load, `/v1/health` shows `"status":"error"` with the reason and chunks get HTTP 503, so test results and
+the report only ever contain real model output.
 
 ## 2. Run
 ```powershell
