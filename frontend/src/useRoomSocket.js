@@ -1,84 +1,200 @@
-import { useEffect, useRef, useState } from "react";
-import { audioQueue } from "./audioQueue";
+import { useEffect, useRef, useState, useCallback } from 'react';
+import { wsUrl as buildWsUrl } from './utils/wsUrl';
 
-export function useRoomSocket(roomId, participantId, name, lang) {
+/**
+ * Hook for managing the Call Server room WebSocket connection.
+ * Features:
+ * - Real WebRTC stats (rtt, packet loss, bitrate, jitter) from getLiveKitStats().
+ *   If real stats are not available (null) NOTHING is sent: we never invent numbers.
+ * - simulatePoor: demo/test switch that sends a clearly "bad" network (flagged simulated:true).
+ *   It is read through a ref, so toggling it does not reconnect the WebSocket.
+ * - "closedByUs" flag to permanently prevent ghost reconnects on leave.
+ * - Decoupled language/name dependencies so set_lang does not re-trigger connection.
+ */
+export const SIMULATED_POOR_STATS = {
+  rtt_ms: 450,
+  packet_loss_pct: 6,
+  bitrate_kbps: 200,
+  jitter_ms: 80,
+};
+
+export function useRoomSocket({
+  callServerUrl,
+  roomId,
+  participantId,
+  name,
+  lang,
+  onTranslation,
+  onMeetingEnded, // () => void, called when the host ended the meeting (or it is closed)
+  getLiveKitStats, // () => Promise<{ rtt_ms, packet_loss_pct, bitrate_kbps, jitter_ms } | null>
+  simulatePoor = false,
+}) {
   const [participants, setParticipants] = useState([]);
   const [activeSpeaker, setActiveSpeaker] = useState({ holder: null, overlap: [] });
-  const [currentMode, setCurrentMode] = useState("subtitle");
-  const [translations, setTranslations] = useState([]);
-  const [overlapTranslations, setOverlapTranslations] = useState([]);
+  const [mode, setMode] = useState({ mode: 'subtitle', reason: 'initial_state' });
+  const [connected, setConnected] = useState(false);
+  const [lastNetStats, setLastNetStats] = useState(null);
+
   const socketRef = useRef(null);
+  const reconnectTimeoutRef = useRef(null);
+  const statsIntervalRef = useRef(null);
+  const closedByUsRef = useRef(false);
+
+  // Keep references to latest values without re-triggering the connection effect
+  const nameRef = useRef(name);
+  nameRef.current = name;
+  const langRef = useRef(lang);
+  langRef.current = lang;
+  const onEndedRef = useRef(onMeetingEnded);
+  onEndedRef.current = onMeetingEnded;
+  const simulateRef = useRef(simulatePoor);
+  simulateRef.current = simulatePoor;
+
+  // Send a JSON message
+  const send = useCallback((msg) => {
+    if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+      socketRef.current.send(JSON.stringify(msg));
+    }
+  }, []);
+
+  // Update language via WebSocket without reconnecting
+  const setLanguage = useCallback((newLang) => {
+    langRef.current = newLang;
+    send({ type: 'set_lang', lang: newLang });
+  }, [send]);
 
   useEffect(() => {
     if (!roomId || !participantId) return;
 
-    const wsUrl = `ws://localhost:8000/ws/room/${roomId}?participant_id=${participantId}`;
-    const ws = new WebSocket(wsUrl);
-    socketRef.current = ws;
+    closedByUsRef.current = false;
 
-    ws.onopen = () => {
-      // Send hello
-      ws.send(JSON.stringify({ type: "hello", participant_id: participantId, name, lang }));
-    };
+    const wsUrl = buildWsUrl(
+      `/ws/room/${encodeURIComponent(roomId)}?participant_id=${encodeURIComponent(participantId)}`,
+      callServerUrl
+    );
 
-    ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-        if (msg.type === "participants") {
-          setParticipants(msg.list || []);
-        } else if (msg.type === "active_speaker") {
-          setActiveSpeaker({ holder: msg.holder, overlap: msg.overlap || [] });
-        } else if (msg.type === "mode") {
-          setCurrentMode(msg.mode);
-        } else if (msg.type === "translation") {
-          if (msg.lane === "main") {
-            setTranslations((prev) => [...prev.slice(-10), msg]);
-            if (msg.mode === "audio" && msg.audio_url) {
-              audioQueue.enqueue(msg.audio_url);
-            }
-          } else {
-            setOverlapTranslations((prev) => [...prev.slice(-5), msg]);
-          }
+    function connect() {
+      if (closedByUsRef.current) return;
+
+      const ws = new WebSocket(wsUrl);
+      socketRef.current = ws;
+
+      ws.onopen = () => {
+        if (closedByUsRef.current) {
+          ws.close();
+          return;
         }
-      } catch (err) {
-        console.error("Failed to parse room event:", err);
-      }
-    };
 
-    // Net stats reporter every 2s
-    const statsTimer = setInterval(() => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(
-          JSON.stringify({
-            type: "net_stats",
-            rtt_ms: 80,
-            packet_loss_pct: 0.1,
-            bitrate_kbps: 850,
-            jitter_ms: 10,
-          })
-        );
-      }
-    }, 2000);
+        setConnected(true);
+
+        // Send hello with latest credentials
+        ws.send(JSON.stringify({
+          type: 'hello',
+          participant_id: participantId,
+          name: nameRef.current,
+          lang: langRef.current,
+        }));
+
+        // net_stats every 2 seconds
+        if (statsIntervalRef.current) clearInterval(statsIntervalRef.current);
+        statsIntervalRef.current = setInterval(async () => {
+          if (closedByUsRef.current) return;
+
+          let payload = null;
+          if (simulateRef.current) {
+            payload = { ...SIMULATED_POOR_STATS, simulated: true };
+          } else if (getLiveKitStats) {
+            try {
+              payload = await getLiveKitStats();
+            } catch (err) {
+              console.warn('Error reading WebRTC stats:', err);
+            }
+          }
+
+          if (!payload) {
+            // No real measurement yet: do not invent numbers, the server keeps its current mode.
+            setLastNetStats(null);
+            return;
+          }
+
+          setLastNetStats(payload);
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'net_stats', ...payload }));
+          }
+        }, 2000);
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          switch (msg.type) {
+            case 'participants':
+              setParticipants(msg.list || []);
+              break;
+            case 'active_speaker':
+              setActiveSpeaker({ holder: msg.holder, overlap: msg.overlap || [] });
+              break;
+            case 'mode':
+              setMode({ mode: msg.mode, reason: msg.reason });
+              break;
+            case 'translation':
+              onTranslation?.(msg);
+              break;
+            case 'meeting_ended':
+              closedByUsRef.current = true; // never reconnect to a finished meeting
+              onEndedRef.current?.();
+              break;
+            case 'error':
+              console.error('Call server error:', msg.message);
+              break;
+            default:
+              break;
+          }
+        } catch (e) {
+          console.warn('Failed to parse WS message:', e);
+        }
+      };
+
+      ws.onclose = (ev) => {
+        setConnected(false);
+        if (ev && ev.code === 4410 && !closedByUsRef.current) {
+          closedByUsRef.current = true;
+          onEndedRef.current?.();
+        }
+        if (statsIntervalRef.current) clearInterval(statsIntervalRef.current);
+
+        // Ghost reconnect fix: only reconnect if NOT intentionally closed by us
+        if (!closedByUsRef.current) {
+          reconnectTimeoutRef.current = setTimeout(connect, 2500);
+        }
+      };
+
+      ws.onerror = (err) => {
+        console.warn('WebSocket encountered error:', err);
+        ws.close();
+      };
+    }
+
+    connect();
 
     return () => {
-      clearInterval(statsTimer);
-      ws.close();
-      audioQueue.clear();
+      // Mark as explicitly closed by us to prevent ghost reconnect
+      closedByUsRef.current = true;
+      if (statsIntervalRef.current) clearInterval(statsIntervalRef.current);
+      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+      if (socketRef.current) {
+        socketRef.current.close();
+        socketRef.current = null;
+      }
     };
-  }, [roomId, participantId, name, lang]);
-
-  const setLanguage = (newLang) => {
-    if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
-      socketRef.current.send(JSON.stringify({ type: "set_lang", lang: newLang }));
-    }
-  };
+  }, [callServerUrl, roomId, participantId, onTranslation, getLiveKitStats]);
 
   return {
+    connected,
     participants,
     activeSpeaker,
-    currentMode,
-    translations,
-    overlapTranslations,
+    mode,
+    lastNetStats,
     setLanguage,
   };
 }

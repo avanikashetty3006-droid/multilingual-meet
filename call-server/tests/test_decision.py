@@ -1,70 +1,153 @@
 import pytest
-from network_monitor import ListenerNetworkState, is_window_good
+import sys
+from pathlib import Path
+
+# Ensure call-server root is in sys.path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from network_monitor import evaluate_window_quality, ListenerNetworkState
+from rooms import Participant
+
+
+def test_pure_quality_evaluation():
+    # Good network
+    good, reason = evaluate_window_quality(
+        rtt_ms=100, packet_loss_pct=0.5, bitrate_kbps=800, speech_latency_ms=1200
+    )
+    assert good is True
+    assert reason == "good_network"
+
+    # High RTT
+    good, reason = evaluate_window_quality(
+        rtt_ms=200, packet_loss_pct=0.5, bitrate_kbps=800, speech_latency_ms=1200
+    )
+    assert good is False
+    assert "high_rtt" in reason
+
+    # High packet loss
+    good, reason = evaluate_window_quality(
+        rtt_ms=80, packet_loss_pct=3.5, bitrate_kbps=800, speech_latency_ms=1200
+    )
+    assert good is False
+    assert "high_packet_loss" in reason
+
+    # Low bitrate
+    good, reason = evaluate_window_quality(
+        rtt_ms=80, packet_loss_pct=0.5, bitrate_kbps=300, speech_latency_ms=1200
+    )
+    assert good is False
+    assert "low_bitrate" in reason
+
+    # High speech latency
+    good, reason = evaluate_window_quality(
+        rtt_ms=80, packet_loss_pct=0.5, bitrate_kbps=800, speech_latency_ms=3500
+    )
+    assert good is False
+    assert "high_speech_latency" in reason
+
 
 def test_initial_mode_is_subtitle():
-    state = ListenerNetworkState("p-1")
+    state = ListenerNetworkState(participant_id="p-1")
     assert state.current_mode == "subtitle"
 
-def test_window_good_criteria():
-    # Good condition: rtt < 150, loss < 2, bitrate > 500, speech_lat < 3000
-    assert is_window_good(100, 0.5, 800, 1000) is True
-    # RTT too high
-    assert is_window_good(160, 0.5, 800, 1000) is False
-    # Packet loss too high
-    assert is_window_good(100, 2.5, 800, 1000) is False
-    # Bitrate too low
-    assert is_window_good(100, 0.5, 400, 1000) is False
-    # Speech latency too high
-    assert is_window_good(100, 0.5, 800, 3200) is False
 
-def test_poor_to_good_requires_3_consecutive_windows():
-    state = ListenerNetworkState("p-1")
-    assert state.current_mode == "subtitle"
+def test_hysteresis_poor_to_good():
+    state = ListenerNetworkState(participant_id="p-1", current_mode="subtitle")
 
-    # Window 1: Good
-    mode = state.update(rtt_ms=100, packet_loss_pct=0.1, bitrate_kbps=900, speech_latency_ms=800)
-    assert mode is None
-    assert state.current_mode == "subtitle"
-
-    # Window 2: Good
-    mode = state.update(rtt_ms=100, packet_loss_pct=0.1, bitrate_kbps=900, speech_latency_ms=800)
-    assert mode is None
-    assert state.current_mode == "subtitle"
-
-    # Window 3: Good -> Triggers switch to audio
-    mode = state.update(rtt_ms=100, packet_loss_pct=0.1, bitrate_kbps=900, speech_latency_ms=800)
-    assert mode == "audio"
-    assert state.current_mode == "audio"
-
-def test_good_to_poor_requires_3_consecutive_windows():
-    state = ListenerNetworkState("p-1")
-    # First promote to audio
-    for _ in range(3):
-        state.update(100, 0.1, 900, 800)
-    assert state.current_mode == "audio"
-
-    # Bad window 1
-    mode = state.update(300, 5.0, 200, 4000)
-    assert mode is None
-    assert state.current_mode == "audio"
-
-    # Bad window 2
-    mode = state.update(300, 5.0, 200, 4000)
-    assert mode is None
-    assert state.current_mode == "audio"
-
-    # Bad window 3 -> Triggers switch to subtitle
-    mode = state.update(300, 5.0, 200, 4000)
+    # 1st good window -> still subtitle
+    mode, changed, _ = state.record_window(80, 0.2, 1000, 1000)
     assert mode == "subtitle"
-    assert state.current_mode == "subtitle"
+    assert changed is False
 
-def test_intermittent_flapping_does_not_switch():
-    state = ListenerNetworkState("p-1")
-    # 2 good, 1 bad, 2 good -> should stay subtitle
-    state.update(100, 0.1, 900, 800)
-    state.update(100, 0.1, 900, 800)
-    state.update(300, 5.0, 200, 4000) # Reset
-    assert state.consecutive_good_windows == 0
-    state.update(100, 0.1, 900, 800)
-    state.update(100, 0.1, 900, 800)
-    assert state.current_mode == "subtitle"
+    # 2nd good window -> still subtitle
+    mode, changed, _ = state.record_window(80, 0.2, 1000, 1000)
+    assert mode == "subtitle"
+    assert changed is False
+
+    # 3rd consecutive good window -> switches to audio
+    mode, changed, reason = state.record_window(80, 0.2, 1000, 1000)
+    assert mode == "audio"
+    assert changed is True
+    assert reason == "good_network"
+
+
+def test_hysteresis_good_to_poor():
+    state = ListenerNetworkState(participant_id="p-1", current_mode="audio")
+
+    # 1st poor window -> still audio
+    mode, changed, _ = state.record_window(300, 5.0, 200, 4000)
+    assert mode == "audio"
+    assert changed is False
+
+    # 2nd poor window -> still audio
+    mode, changed, _ = state.record_window(300, 5.0, 200, 4000)
+    assert mode == "audio"
+    assert changed is False
+
+    # 3rd consecutive poor window -> switches to subtitle
+    mode, changed, reason = state.record_window(300, 5.0, 200, 4000)
+    assert mode == "subtitle"
+    assert changed is True
+    assert "high_rtt" in reason or "high_packet_loss" in reason
+
+
+def test_intermittent_flapping_prevented_by_hysteresis():
+    state = ListenerNetworkState(participant_id="p-1", current_mode="subtitle")
+
+    # Good, Good, Poor, Good -> Never reaches 3 consecutive good
+    state.record_window(80, 0.2, 1000, 1000)
+    state.record_window(80, 0.2, 1000, 1000)
+    state.record_window(300, 5.0, 200, 4000)  # reset
+    mode, changed, _ = state.record_window(80, 0.2, 1000, 1000)
+    assert mode == "subtitle"
+    assert changed is False
+
+
+def test_no_decision_before_first_stats():
+    # A newly created participant has latest_net_stats = None
+    p = Participant(participant_id="p-new", name="Asha", lang="en", room_id="r1")
+    assert p.latest_net_stats is None
+    assert p.net_state.has_evaluated is False
+    assert p.mode == "subtitle"
+
+
+def test_stale_stats_evaluates_to_poor():
+    # Fresh stats (age 2s <= 6s threshold)
+    good, reason = evaluate_window_quality(
+        rtt_ms=80, packet_loss_pct=0.5, bitrate_kbps=800, stats_age_s=2.0
+    )
+    assert good is True
+    assert reason == "good_network"
+
+    # Stale stats (age 7s > 6s threshold)
+    good, reason = evaluate_window_quality(
+        rtt_ms=80, packet_loss_pct=0.5, bitrate_kbps=800, stats_age_s=7.0
+    )
+    assert good is False
+    assert reason == "stale_stats"
+
+    # Stale stats forces mode switch to subtitle under hysteresis
+    state = ListenerNetworkState(participant_id="p-1", current_mode="audio")
+    state.record_window(80, 0.2, 1000, stats_age_s=7.0)
+    state.record_window(80, 0.2, 1000, stats_age_s=7.0)
+    mode, changed, reason = state.record_window(80, 0.2, 1000, stats_age_s=7.0)
+    assert mode == "subtitle"
+    assert changed is True
+    assert reason == "stale_stats"
+
+
+def test_unknown_speech_latency_does_not_block_audio():
+    # When speech_latency_ms is None (service health failed/unknown), does not block audio
+    good, reason = evaluate_window_quality(
+        rtt_ms=80, packet_loss_pct=0.5, bitrate_kbps=800, speech_latency_ms=None
+    )
+    assert good is True
+    assert reason == "good_network"
+
+    state = ListenerNetworkState(participant_id="p-1", current_mode="subtitle")
+    state.record_window(80, 0.2, 1000, speech_latency_ms=None)
+    state.record_window(80, 0.2, 1000, speech_latency_ms=None)
+    mode, changed, reason = state.record_window(80, 0.2, 1000, speech_latency_ms=None)
+    assert mode == "audio"
+    assert changed is True
+    assert reason == "good_network"

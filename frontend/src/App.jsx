@@ -1,78 +1,111 @@
-import React, { useState } from "react";
-import { JoinScreen } from "./JoinScreen";
-import { VideoGrid } from "./VideoGrid";
-import { SubtitlePanel } from "./SubtitlePanel";
-import { useRoomSocket } from "./useRoomSocket";
+import React, { Suspense } from 'react';
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { useAuth } from './context/AuthContext';
+import { LogoReveal } from './LogoReveal';
+import { ErrorBoundary } from './components/ErrorBoundary';
+import { AppShell } from './components/AppShell';
 
-export default function App() {
-  const [session, setSession] = useState(null);
+// Views
+import { SignInView } from './views/SignInView';
+import { HomeView } from './views/HomeView';
+import { MeetingsView } from './views/MeetingsView';
+import { FriendsView } from './views/FriendsView';
+import { SettingsView } from './views/SettingsView';
+import { LobbyView } from './views/LobbyView';
 
-  if (!session) {
-    return <JoinScreen onJoin={setSession} />;
+/**
+ * Route protection wrapper.
+ * Deep links preserve target path via query parameter ?redirect=
+ */
+function RequireAuth({ children }) {
+  const { user, loading } = useAuth();
+  const location = useLocation();
+
+  if (loading) {
+    return (
+      <div
+        style={{
+          display: 'flex',
+          height: '100vh',
+          width: '100vw',
+          alignItems: 'center',
+          justifyContent: 'center',
+          backgroundColor: '#090809',
+          color: '#A28FA5',
+          fontFamily: "'Plus Jakarta Sans', system-ui, sans-serif",
+          fontSize: '0.92rem',
+        }}
+      >
+        Initializing VAAK session...
+      </div>
+    );
   }
 
-  return <ActiveCall session={session} onLeave={() => setSession(null)} />;
+  if (!user) {
+    return <Navigate to={`/signin?redirect=${encodeURIComponent(location.pathname + location.search)}`} replace />;
+  }
+
+  return children;
 }
 
-function ActiveCall({ session, onLeave }) {
-  const {
-    participants,
-    activeSpeaker,
-    currentMode,
-    translations,
-    overlapTranslations,
-    setLanguage,
-  } = useRoomSocket(session.room, session.participantId, session.name, session.lang);
+export default function App() {
+  const { showIntro, markIntroCompleted } = useAuth();
 
   return (
-    <div className="flex flex-col h-screen p-4 gap-4 max-w-7xl mx-auto">
-      {/* Header */}
-      <header className="flex justify-between items-center bg-slate-800 px-4 py-3 rounded-xl border border-slate-700">
-        <div className="flex items-center gap-3">
-          <span className="font-bold text-lg text-white">Multilingual Meet</span>
-          <span className="text-xs bg-slate-700 px-2 py-0.5 rounded text-slate-300 font-mono">
-            Room: {session.room}
-          </span>
-        </div>
+    <ErrorBoundary>
+      {/* Cinematic Logo Reveal shown once per session after sign in */}
+      {showIntro && <LogoReveal onComplete={markIntroCompleted} />}
 
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2 text-xs">
-            <span className="text-slate-400">Hearing in:</span>
-            <select
-              value={session.lang}
-              onChange={(e) => setLanguage(e.target.value)}
-              className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-white font-mono"
-            >
-              <option value="en">EN</option>
-              <option value="hi">HI</option>
-              <option value="kn">KN</option>
-              <option value="ta">TA</option>
-              <option value="te">TE</option>
-              <option value="ml">ML</option>
-              <option value="mr">MR</option>
-            </select>
-          </div>
-
-          <button
-            onClick={onLeave}
-            className="bg-rose-600 hover:bg-rose-500 text-xs font-semibold px-3 py-1.5 rounded transition"
+      <Suspense
+        fallback={
+          <div
+            style={{
+              display: 'flex',
+              height: '100vh',
+              width: '100vw',
+              alignItems: 'center',
+              justifyContent: 'center',
+              backgroundColor: '#090809',
+              color: '#A28FA5',
+            }}
           >
-            Leave
-          </button>
-        </div>
-      </header>
+            Loading...
+          </div>
+        }
+      >
+        <Routes>
+          {/* Public Sign-In Route */}
+          <Route path="/signin" element={<SignInView />} />
 
-      {/* Main Grid & Subtitle Panel */}
-      <main className="flex-1 flex flex-col md:flex-row gap-4 overflow-hidden">
-        <VideoGrid participants={participants} activeSpeaker={activeSpeaker} />
-        <div className="w-full md:w-96 flex flex-col justify-end">
-          <SubtitlePanel
-            translations={translations}
-            overlapTranslations={overlapTranslations}
-            currentMode={currentMode}
+          {/* Deep link lobby / conference screen */}
+          <Route
+            path="/m/:id"
+            element={
+              <RequireAuth>
+                <LobbyView />
+              </RequireAuth>
+            }
           />
-        </div>
-      </main>
-    </div>
+
+          {/* Authenticated App Shell Routes */}
+          <Route
+            path="/"
+            element={
+              <RequireAuth>
+                <AppShell />
+              </RequireAuth>
+            }
+          >
+            <Route index element={<HomeView />} />
+            <Route path="meetings" element={<MeetingsView />} />
+            <Route path="friends" element={<FriendsView />} />
+            <Route path="settings" element={<SettingsView />} />
+          </Route>
+
+          {/* Catch-all redirect */}
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </Suspense>
+    </ErrorBoundary>
   );
 }

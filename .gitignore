@@ -1,3 +1,11 @@
+# Node / Frontend
+node_modules/
+dist/
+.vite/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
 # Python
 __pycache__/
 *.py[cod]
@@ -22,38 +30,32 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-
-# Testing & Coverage
 .pytest_cache/
-.coverage
-htmlcov/
 
-# Node / Frontend
-node_modules/
-dist/
-.vite/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-
-# Models & Large Artifacts (DO NOT COMMIT)
-models/
-*.bin
-*.onnx
-*.pt
-*.safetensors
-
-# Generated Audios
+# Audio outputs & metrics
+call-server/metrics.csv
 speech-service/audio/*.wav
-!speech-service/audio/sample.wav
-!speech-service/audio/mock_en.wav
-!speech-service/audio/mock_hi.wav
-!speech-service/audio/mock_kn.wav
+!speech-service/audio/.gitkeep
 
-# Environment & OS
+# Environment and Secrets
 .env
+.env.local
+*.pem
+
+# IDE & OS
+.vscode/
+.idea/
+*.swp
+*.swo
 .DS_Store
 Thumbs.db
-*.log
+
+# local runtime files
+vaak.db
+vaak.db-*
+call-server/vaak.db*
 metrics.csv
+latency_report.png
+latency_vs_users.png
+speech-service/models/
+speech-service/audio/*.wav

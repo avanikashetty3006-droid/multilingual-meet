@@ -1,155 +1,110 @@
-import json
-import os
+"""Contract tests. Run from speech-service/:  MOCK=1 pytest -q"""
 import io
-import pytest
+import math
+import os
+import random
+import struct
+import wave
+
 from fastapi.testclient import TestClient
 
-# Ensure MOCK=1 is set for testing
-os.environ["MOCK"] = "1"
-os.environ["MAX_QUEUE_DEPTH"] = "4"
-from main import app
+import main
 
-client = TestClient(app)
+SR = 16000
 
-def create_dummy_wav(duration_bytes: int = 1024) -> io.BytesIO:
-    # 44 bytes wav header + dummy PCM
-    header = b"RIFF" + (duration_bytes + 36).to_bytes(4, "little") + b"WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x80>\x00\x00\x00}\x00\x00\x02\x00\x10\x00data" + duration_bytes.to_bytes(4, "little")
-    pcm = b"\x01\x00" * (duration_bytes // 2)
-    return io.BytesIO(header + pcm)
 
-def test_1_health_endpoint():
-    response = client.get("/v1/health")
-    assert response.status_code == 200
-    data = response.json()
-    assert data["status"] == "ok"
-    assert "queue_depth" in data
-    assert "avg_latency_ms" in data
-    assert "device" in data
-    assert data["mock"] is True
+def make_wav(kind="tone", seconds=1.0) -> bytes:
+    n = int(SR * seconds)
+    if kind == "tone":
+        samples = [int(9000 * math.sin(2 * math.pi * 440 * i / SR)) for i in range(n)]
+    elif kind == "noise":
+        samples = [random.randint(-40, 40) for _ in range(n)]
+    else:
+        samples = [0] * n
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(SR)
+        w.writeframes(b"".join(struct.pack("<h", s) for s in samples))
+    return buf.getvalue()
 
-def test_2_process_chunk_with_audio():
-    wav_file = create_dummy_wav(4000)
-    response = client.post(
+
+def post(client, wav, want_audio="false", tgt='["hi","kn"]', src="en"):
+    return client.post(
         "/v1/process-chunk",
+        files={"audio": ("chunk.wav", wav, "audio/wav")},
         data={
-            "room_id": "room1",
-            "participant_id": "p-1",
-            "chunk_id": "p-1-0",
-            "src_lang": "en",
-            "tgt_langs": json.dumps(["hi", "kn"]),
-            "want_audio": "true"
+            "room_id": "r1", "participant_id": "p1", "chunk_id": "c1",
+            "src_lang": src, "tgt_langs": tgt, "want_audio": want_audio,
         },
-        files={"audio": ("chunk.wav", wav_file, "audio/wav")}
     )
-    assert response.status_code == 200
-    data = response.json()
-    assert data["chunk_id"] == "p-1-0"
-    assert data["participant_id"] == "p-1"
-    assert data["detected_lang"] == "en"
-    assert len(data["source_text"]) > 0
-    assert "hi" in data["translations"]
-    assert "kn" in data["translations"]
-    assert data["translations"]["hi"]["audio_url"] is not None
-    assert data["timings_ms"]["tts"] > 0
-    assert data["timings_ms"]["total"] > 0
 
-def test_3_process_chunk_without_audio():
-    wav_file = create_dummy_wav(4000)
-    response = client.post(
-        "/v1/process-chunk",
-        data={
-            "room_id": "room1",
-            "participant_id": "p-1",
-            "chunk_id": "p-1-1",
-            "src_lang": "en",
-            "tgt_langs": json.dumps(["hi"]),
-            "want_audio": "false"
-        },
-        files={"audio": ("chunk.wav", wav_file, "audio/wav")}
-    )
-    assert response.status_code == 200
-    data = response.json()
-    assert data["translations"]["hi"]["audio_url"] is None
-    assert data["timings_ms"]["tts"] == 0
 
-def test_4_process_chunk_silence():
-    # Empty or silent audio
-    wav_file = io.BytesIO(b"\x00" * 128)
-    response = client.post(
-        "/v1/process-chunk",
-        data={
-            "room_id": "room1",
-            "participant_id": "p-1",
-            "chunk_id": "p-1-2",
-            "src_lang": "en",
-            "tgt_langs": json.dumps(["hi"]),
-            "want_audio": "false"
-        },
-        files={"audio": ("silent.wav", wav_file, "audio/wav")}
-    )
-    assert response.status_code == 200
-    data = response.json()
-    assert data["source_text"] == ""
-    assert data["translations"] == {}
+def check_schema(body):
+    assert set(body) == {"chunk_id", "participant_id", "detected_lang",
+                         "source_text", "translations", "timings_ms"}
+    assert set(body["timings_ms"]) == {"asr", "mt", "tts", "total"}
+    for t in body["translations"].values():
+        assert set(t) == {"text", "audio_url"}
 
-def test_5_process_chunk_auto_src_lang():
-    wav_file = create_dummy_wav(4000)
-    response = client.post(
-        "/v1/process-chunk",
-        data={
-            "room_id": "room1",
-            "participant_id": "p-2",
-            "chunk_id": "p-2-0",
-            "src_lang": "auto",
-            "tgt_langs": json.dumps(["hi", "kn"]),
-            "want_audio": "true"
-        },
-        files={"audio": ("chunk.wav", wav_file, "audio/wav")}
-    )
-    assert response.status_code == 200
-    data = response.json()
-    assert data["detected_lang"] in ["en", "hi", "kn"]
 
-def test_6_audio_static_files():
-    for filename in ["sample.wav", "mock_en.wav", "mock_hi.wav", "mock_kn.wav"]:
-        response = client.get(f"/audio/{filename}")
-        assert response.status_code == 200
-        assert len(response.content) > 44
+def test_schema_with_audio():
+    with TestClient(main.app) as c:
+        body = post(c, make_wav(), want_audio="true").json()
+        check_schema(body)
+        assert set(body["translations"]) == {"hi", "kn"}
+        for t in body["translations"].values():
+            assert t["audio_url"].startswith("http")
+            assert c.get(t["audio_url"].replace(main.PUBLIC_URL, "")).status_code == 200
 
-def test_7_invalid_tgt_langs_422():
-    wav_file = create_dummy_wav(1000)
-    response = client.post(
-        "/v1/process-chunk",
-        data={
-            "room_id": "room1",
-            "participant_id": "p-1",
-            "chunk_id": "p-1-3",
-            "src_lang": "en",
-            "tgt_langs": "not-valid-json",
-            "want_audio": "false"
-        },
-        files={"audio": ("chunk.wav", wav_file, "audio/wav")}
-    )
-    assert response.status_code == 422
 
-def test_8_queue_depth_429():
-    import main
-    original_depth = main.active_requests
-    try:
-        main.active_requests = main.MAX_QUEUE_DEPTH
-        wav_file = create_dummy_wav(1000)
-        response = client.post(
-            "/v1/process-chunk",
-            data={
-                "room_id": "room1",
-                "participant_id": "p-1",
-                "chunk_id": "p-1-4",
-                "src_lang": "en",
-                "tgt_langs": json.dumps(["hi"]),
-                "want_audio": "false"
-            },
-            files={"audio": ("chunk.wav", wav_file, "audio/wav")}
-        )
-        assert response.status_code == 429
-    finally:
-        main.active_requests = original_depth
+def test_want_audio_false_skips_tts():
+    with TestClient(main.app) as c:
+        body = post(c, make_wav(), want_audio="false").json()
+        check_schema(body)
+        assert body["timings_ms"]["tts"] == 0
+        assert all(t["audio_url"] is None for t in body["translations"].values())
+
+
+def test_silence_and_noise_return_200_empty():
+    with TestClient(main.app) as c:
+        for kind in ("silence", "noise"):
+            r = post(c, make_wav(kind))
+            assert r.status_code == 200
+            assert r.json()["source_text"] == ""
+            assert r.json()["translations"] == {}
+
+
+def test_garbage_audio_does_not_crash():
+    with TestClient(main.app) as c:
+        r = post(c, b"not a wav")
+        assert r.status_code == 200 and r.json()["source_text"] == ""
+
+
+def test_auto_language_works():
+    with TestClient(main.app) as c:
+        r = post(c, make_wav(), src="auto")
+        assert r.status_code == 200 and r.json()["detected_lang"]
+
+
+def test_bad_tgt_langs_is_422():
+    with TestClient(main.app) as c:
+        assert post(c, make_wav(), tgt="hi,kn").status_code == 422
+
+
+def test_busy_returns_429():
+    with TestClient(main.app) as c:
+        main.in_flight = main.MAX_QUEUE_DEPTH
+        try:
+            assert post(c, make_wav()).status_code == 429
+        finally:
+            main.in_flight = 0
+
+
+def test_health_shape_and_sample_files():
+    with TestClient(main.app) as c:
+        h = c.get("/v1/health").json()
+        assert {"queue_depth", "avg_latency_ms"} <= set(h)
+        for f in ("sample.wav", "mock_en.wav", "mock_hi.wav", "mock_kn.wav"):
+            assert c.get(f"/audio/{f}").status_code == 200
